@@ -20,13 +20,14 @@ class _GPSDeviceState extends State<GPSDevice> {
   String _serialNumber = '';
   String _baseUrl = Constants.uri;
   Position? _location;
+  Position? _currentPosition; // Added missing field
   String? _errorMessage;
   bool _loading = false;
   bool _updating = false;
   DateTime? _lastUpdateTime;
   Timer? _periodicTimer;
   LocationPermission? _permissionStatus;
-  
+
   // WebSocket related variables
   IO.Socket? _socket;
   bool _isSocketConnected = false;
@@ -36,10 +37,16 @@ class _GPSDeviceState extends State<GPSDevice> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _requestPermission();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _requestPermission();
+      // Initialize current position after permission
+      _currentPosition = await Geolocator.getCurrentPosition();
+      if (mounted) {
+        setState(() {});
+      }
     });
   }
+
   @override
   void dispose() {
     _disconnectWebSocket();
@@ -220,6 +227,7 @@ class _GPSDeviceState extends State<GPSDevice> {
       setState(() => _updating = false);
     }
   }
+
   Future<void> _sendLocationToBackend(
     String baseUrl,
     String serialNumber,
@@ -262,7 +270,7 @@ class _GPSDeviceState extends State<GPSDevice> {
 
     try {
       final finalBaseUrl = _baseUrl.isNotEmpty ? _baseUrl : Constants.uri;
-      
+
       _socket = IO.io(finalBaseUrl, <String, dynamic>{
         'transports': ['websocket'],
         'autoConnect': false,
@@ -274,12 +282,12 @@ class _GPSDeviceState extends State<GPSDevice> {
         setState(() => _isSocketConnected = true);
         _logger.info('WebSocket connected');
         _showSuccessToast('Real-time connection established');
-        
+
         // Register device with server
         if (_serialNumber.isNotEmpty) {
           _registerDevice();
         }
-        
+
         // Start heartbeat
         _startHeartbeat();
       });
@@ -300,7 +308,6 @@ class _GPSDeviceState extends State<GPSDevice> {
       _socket!.on('pong', (_) {
         _logger.fine('Heartbeat pong received');
       });
-
     } catch (e) {
       _logger.severe('Error initializing WebSocket: $e');
       _showErrorToast('WebSocket setup failed: $e');
@@ -324,13 +331,17 @@ class _GPSDeviceState extends State<GPSDevice> {
         'deviceInfo': {
           'platform': 'Flutter',
           'timestamp': DateTime.now().toIso8601String(),
-        }
+        },
       });
       _logger.info('Device registered with serial: $_serialNumber');
     }
   }
 
-  void _sendLocationViaWebSocket(String serialNumber, double latitude, double longitude) {
+  void _sendLocationViaWebSocket(
+    String serialNumber,
+    double latitude,
+    double longitude,
+  ) {
     if (_socket != null && _isSocketConnected) {
       final locationData = {
         'serialNumber': serialNumber,
@@ -355,6 +366,7 @@ class _GPSDeviceState extends State<GPSDevice> {
       }
     });
   }
+
   void _stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
@@ -369,7 +381,7 @@ class _GPSDeviceState extends State<GPSDevice> {
 
     try {
       // Get current position or use a default
-      double baseLat = _currentPosition?.latitude ?? -1.2921;  // Nairobi default
+      double baseLat = _currentPosition?.latitude ?? -1.2921; // Nairobi default
       double baseLng = _currentPosition?.longitude ?? 36.8219;
 
       // Generate random movement within ~1km radius
@@ -393,11 +405,11 @@ class _GPSDeviceState extends State<GPSDevice> {
     try {
       double baseLat = _currentPosition?.latitude ?? -1.2921;
       double baseLng = _currentPosition?.longitude ?? 36.8219;
-      
+
       // Circular movement pattern
       double angle = DateTime.now().millisecondsSinceEpoch / 10000.0;
       double radius = 0.005; // ~500m radius
-      
+
       double newLat = baseLat + radius * cos(angle);
       double newLng = baseLng + radius * sin(angle);
 
@@ -417,7 +429,7 @@ class _GPSDeviceState extends State<GPSDevice> {
     try {
       double baseLat = _currentPosition?.latitude ?? -1.2921;
       double baseLng = _currentPosition?.longitude ?? 36.8219;
-      
+
       // Linear movement (north-south)
       double offset = (DateTime.now().millisecondsSinceEpoch % 60000) / 60000.0;
       double newLat = baseLat + (offset - 0.5) * 0.01;
@@ -446,6 +458,7 @@ class _GPSDeviceState extends State<GPSDevice> {
     });
     _showSuccessToast('Started periodic updates (every 1 minute)');
   }
+
   void stopPeriodicUpdates() {
     _periodicTimer?.cancel();
     _periodicTimer = null;
@@ -477,6 +490,42 @@ class _GPSDeviceState extends State<GPSDevice> {
   String get _formattedLastUpdateTime {
     if (_lastUpdateTime == null) return 'Never';
     return 'Last updated: ${_lastUpdateTime!.hour}:${_lastUpdateTime!.minute.toString().padLeft(2, '0')}:${_lastUpdateTime!.second.toString().padLeft(2, '0')}';
+  }
+
+  // Add _sendLocationUpdate method
+  Future<void> _sendLocationUpdate(
+    String serialNumber,
+    double lat,
+    double lng,
+  ) async {
+    if (!mounted) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/gpsModules/update-location'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'serialNumber': serialNumber,
+          'latitude': lat,
+          'longitude': lng,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _lastUpdateTime = DateTime.now();
+        });
+      } else {
+        throw Exception('Failed to update location');
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to update location: $e';
+        });
+      }
+      _logger.warning('Failed to update location: $e');
+    }
   }
 
   @override
@@ -548,7 +597,8 @@ class _GPSDeviceState extends State<GPSDevice> {
                 ),
                 onChanged:
                     (value) => setState(() => _serialNumber = value.trim()),
-              ),              Card(
+              ),
+              Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -565,9 +615,15 @@ class _GPSDeviceState extends State<GPSDevice> {
                             ),
                           ),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
                             decoration: BoxDecoration(
-                              color: _isSocketConnected ? Colors.green : Colors.red,
+                              color:
+                                  _isSocketConnected
+                                      ? Colors.green
+                                      : Colors.red,
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Text(
@@ -583,11 +639,12 @@ class _GPSDeviceState extends State<GPSDevice> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _isSocketConnected 
-                          ? 'Real-time connection established' 
-                          : 'No real-time connection',
+                        _isSocketConnected
+                            ? 'Real-time connection established'
+                            : 'No real-time connection',
                         style: TextStyle(
-                          color: _isSocketConnected ? Colors.green : Colors.grey,
+                          color:
+                              _isSocketConnected ? Colors.green : Colors.grey,
                         ),
                       ),
                     ],
@@ -688,13 +745,14 @@ class _GPSDeviceState extends State<GPSDevice> {
                     ),
                   ),
                 ],
-              ),              const SizedBox(height: 8),
+              ),
+              const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: _periodicTimer != null ? stopPeriodicUpdates : null,
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                 child: const Text('Stop Updates'),
               ),
-              
+
               // Simulation Controls Section
               const SizedBox(height: 24),
               const Divider(),
@@ -713,13 +771,14 @@ class _GPSDeviceState extends State<GPSDevice> {
                 style: TextStyle(fontSize: 14, color: Colors.grey),
               ),
               const SizedBox(height: 16),
-              
+
               // Simulation Buttons Row 1
               Row(
                 children: [
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _isSocketConnected ? _simulateRandomMovement : null,
+                      onPressed:
+                          _isSocketConnected ? _simulateRandomMovement : null,
                       icon: const Icon(Icons.shuffle),
                       label: const Text('Random'),
                       style: ElevatedButton.styleFrom(
@@ -731,7 +790,8 @@ class _GPSDeviceState extends State<GPSDevice> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _isSocketConnected ? _simulateCircularMovement : null,
+                      onPressed:
+                          _isSocketConnected ? _simulateCircularMovement : null,
                       icon: const Icon(Icons.refresh),
                       label: const Text('Circular'),
                       style: ElevatedButton.styleFrom(
@@ -743,7 +803,7 @@ class _GPSDeviceState extends State<GPSDevice> {
                 ],
               ),
               const SizedBox(height: 8),
-              
+
               // Simulation Buttons Row 2
               ElevatedButton.icon(
                 onPressed: _isSocketConnected ? _simulateLinearMovement : null,
@@ -754,12 +814,12 @@ class _GPSDeviceState extends State<GPSDevice> {
                   foregroundColor: Colors.white,
                 ),
               ),
-              
+
               const SizedBox(height: 8),
               Text(
-                _isSocketConnected 
-                  ? '✅ Ready for simulation' 
-                  : '⚠️ Connect to server first',
+                _isSocketConnected
+                    ? '✅ Ready for simulation'
+                    : '⚠️ Connect to server first',
                 style: TextStyle(
                   fontSize: 12,
                   color: _isSocketConnected ? Colors.green : Colors.orange,

@@ -3,6 +3,8 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  battery_plus
+  flutter_webrtc
   geolocator_windows
   url_launcher_windows
 )

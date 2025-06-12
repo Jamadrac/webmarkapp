@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../Body.dart'; // Import MainScreen
 import '../providers/auth_provider.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -28,6 +29,23 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    // Add listener for auth state changes
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      auth.addListener(() {
+        if (auth.isAuthenticated && mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (context) => const MainScreen()),
+          );
+        }
+      });
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final smallScreen = screenSize.width < 600;
@@ -41,7 +59,6 @@ class _LoginScreenState extends State<LoginScreen> {
     // Ensure form doesn't exceed screen width
     final formWidth =
         smallScreen ? screenSize.width * 0.9 : screenSize.width * 0.6;
-
     return Scaffold(
       body: Consumer<AuthProvider>(
         builder:
@@ -49,9 +66,10 @@ class _LoginScreenState extends State<LoginScreen> {
               height: screenSize.height,
               width: screenSize.width,
               decoration: const BoxDecoration(
-                image: DecorationImage(
-                  image: AssetImage('assets/background.jpg'),
-                  fit: BoxFit.cover,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFF3F4F6), Color(0xFFE5E7EB)],
                 ),
               ),
               child: Center(
@@ -81,31 +99,50 @@ class _LoginScreenState extends State<LoginScreen> {
                           ConstrainedBox(
                             constraints: BoxConstraints(maxWidth: formWidth),
                             child: Container(
-                              padding: EdgeInsets.all(screenSize.width * 0.05),
+                              padding: const EdgeInsets.all(24),
                               decoration: BoxDecoration(
                                 color: Colors.white,
-                                borderRadius: BorderRadius.circular(32),
+                                borderRadius: BorderRadius.circular(12),
                                 boxShadow: const [
                                   BoxShadow(
-                                    color: Colors.black26,
-                                    blurRadius: 10,
+                                    color: Color(0x1A000000),
+                                    blurRadius: 15,
                                     offset: Offset(0, 4),
                                   ),
                                 ],
                               ),
                               child: Column(
                                 children: [
-                                  Text(
-                                    'Welcome',
-                                    style: TextStyle(
-                                      color: Colors.purple,
-                                      fontSize: welcomeFontSize.clamp(
-                                        20.0,
-                                        28.0,
+                                  ClipOval(
+                                    child: Container(
+                                      width: 96,
+                                      height: 96,
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: Theme.of(context).primaryColor,
+                                          width: 2,
+                                        ),
+                                        shape: BoxShape.circle,
                                       ),
-                                      fontWeight: FontWeight.bold,
+                                      child: Icon(
+                                        Icons.location_on,
+                                        size: 48,
+                                        color: Theme.of(context).primaryColor,
+                                      ),
                                     ),
                                   ),
+                                  const SizedBox(height: 24),
+                                  Text(
+                                    'Welcome Back',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.displayLarge?.copyWith(
+                                      fontSize: 28,
+                                      color: const Color(0xFF1F2937),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+
                                   const SizedBox(height: 8),
                                   FittedBox(
                                     fit: BoxFit.scaleDown,
@@ -133,46 +170,56 @@ class _LoginScreenState extends State<LoginScreen> {
                                     ),
                                   TextFormField(
                                     controller: _usernameController,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       labelText: 'Email address',
                                       suffixIcon: Icon(
-                                        Icons.check,
-                                        color: Colors.purple,
+                                        Icons.email_outlined,
+                                        color: Theme.of(context).primaryColor,
                                       ),
                                     ),
-                                    validator:
-                                        (value) =>
-                                            value?.isEmpty ?? true
-                                                ? 'Email is required'
-                                                : null,
+                                    validator: (value) {
+                                      if (value == null || value.isEmpty) {
+                                        return 'Please enter your email';
+                                      }
+                                      if (!value.contains('@')) {
+                                        return 'Please enter a valid email';
+                                      }
+                                      return null;
+                                    },
                                   ),
                                   const SizedBox(height: 16),
                                   TextFormField(
                                     controller: _passwordController,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       labelText: 'Password',
                                       suffixIcon: Icon(
-                                        Icons.visibility,
-                                        color: Colors.grey,
+                                        Icons.lock_outline,
+                                        color: Theme.of(context).primaryColor,
                                       ),
                                     ),
                                     obscureText: true,
-                                    validator:
-                                        (value) =>
-                                            value?.isEmpty ?? true
-                                                ? 'Password is required'
-                                                : null,
+                                    validator: (value) {
+                                      if (value == null || value.isEmpty) {
+                                        return 'Please enter your password';
+                                      }
+                                      if (value.length < 6) {
+                                        return 'Password must be at least 6 characters';
+                                      }
+                                      return null;
+                                    },
                                   ),
                                   const SizedBox(height: 16),
                                   Wrap(
                                     alignment: WrapAlignment.spaceBetween,
                                     children: [
-                                      Row(mainAxisSize: MainAxisSize.min),
                                       TextButton(
-                                        onPressed: () {},
-                                        child: const Text(
-                                          'I forgot my password',
-                                          style: TextStyle(color: Colors.grey),
+                                        onPressed: () => _launchURL(),
+                                        child: Text(
+                                          'Forgot Password?',
+                                          style: TextStyle(
+                                            color:
+                                                Theme.of(context).primaryColor,
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -183,27 +230,34 @@ class _LoginScreenState extends State<LoginScreen> {
                                   else
                                     SizedBox(
                                       width: double.infinity,
-                                      height: 50,
                                       child: ElevatedButton(
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.purple,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              32,
-                                            ),
-                                          ),
-                                        ),
-                                        onPressed: () {
-                                          if (_formKey.currentState
-                                                  ?.validate() ??
-                                              false) {
-                                            auth.login(
+                                        onPressed: () async {
+                                          if (_formKey.currentState!
+                                              .validate()) {
+                                            await auth.login(
                                               _usernameController.text,
                                               _passwordController.text,
                                             );
+                                            if (auth.isAuthenticated &&
+                                                mounted) {
+                                              Navigator.pushReplacement(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder:
+                                                      (context) =>
+                                                          const MainScreen(),
+                                                ),
+                                              );
+                                            }
                                           }
                                         },
-                                        child: const Text('LOGIN'),
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(12.0),
+                                          child: Text(
+                                            'Login',
+                                            style: TextStyle(fontSize: 16),
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   const SizedBox(height: 16),

@@ -23,19 +23,24 @@ class AuthProvider extends ChangeNotifier {
 
       print('Attempting login to: ${Constants.uri}/api/login');
       print('Username: $username');
-      print('Request body: ${json.encode({'username': username, 'password': password})}');
+      print(
+        'Request body: ${json.encode({'username': username, 'password': password})}',
+      );
 
-      final response = await http.post(
-        Uri.parse('${Constants.uri}/api/login'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: json.encode({'username': username, 'password': password}),
-      ).timeout(const Duration(seconds: 30));
+      final response = await http
+          .post(
+            Uri.parse('${Constants.uri}/api/login'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: json.encode({'username': username, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 30));
 
       print('Response status: ${response.statusCode}');
-      print('Response body: ${response.body}');      if (response.statusCode == 200) {
+      print('Response body: ${response.body}');
+      if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print('Login response data: $data');
 
@@ -50,7 +55,7 @@ class AuthProvider extends ChangeNotifier {
           await prefs.setBool('isAuthenticated', true);
           await prefs.setString('user', json.encode(data));
           await prefs.setString('token', data['token'] ?? '');
-          
+
           print('Login successful for user: ${_user?.username}');
         } else {
           _error = 'Invalid response format from server';
@@ -59,16 +64,19 @@ class AuthProvider extends ChangeNotifier {
         }
       } else {
         final errorData = json.decode(response.body);
-        _error = errorData['error'] ?? 'Login failed with status ${response.statusCode}';
+        _error =
+            errorData['error'] ??
+            'Login failed with status ${response.statusCode}';
         _isAuthenticated = false;
         print('Login failed: $_error');
         print('Error response body: ${response.body}');
-      }    } catch (e) {
+      }
+    } catch (e) {
       _error = 'Network error occurred: $e';
       _isAuthenticated = false;
       print('Login error: $e');
       print('Error type: ${e.runtimeType}');
-      
+
       // Check if it's a timeout error
       if (e.toString().contains('TimeoutException')) {
         _error = 'Request timeout. Please check your internet connection.';
@@ -100,15 +108,64 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> updateProfile({
+    required String firstName,
+    required String lastName,
+    required String mobile,
+    required String address,
+  }) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+
+      final response = await http.put(
+        Uri.parse('${Constants.uri}/api/updateuser'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: json.encode({
+          'firstName': firstName,
+          'lastName': lastName,
+          'mobile': mobile,
+          'address': address,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        _user = User.fromJson(data['user']);
+        _error = null;
+
+        // Update stored user details
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('user', json.encode(data['user']));
+      } else {
+        final errorData = json.decode(response.body);
+        _error = errorData['error'] ?? 'Failed to update profile';
+        throw Exception(_error);
+      }
+    } catch (e) {
+      _error = 'Error updating profile: $e';
+      throw Exception(_error);
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   // Test function to debug login
   Future<void> testLogin() async {
     try {
       print('Testing server connection...');
-      
+
       // Test basic server connectivity
       final healthResponse = await http.get(Uri.parse(Constants.uri));
-      print('Health check: ${healthResponse.statusCode} - ${healthResponse.body}');
-      
+      print(
+        'Health check: ${healthResponse.statusCode} - ${healthResponse.body}',
+      );
+
       // Test login endpoint with dummy data
       final testResponse = await http.post(
         Uri.parse('${Constants.uri}/api/login'),
@@ -118,10 +175,9 @@ class AuthProvider extends ChangeNotifier {
         },
         body: json.encode({'username': 'test', 'password': 'test'}),
       );
-      
+
       print('Test login status: ${testResponse.statusCode}');
       print('Test login response: ${testResponse.body}');
-      
     } catch (e) {
       print('Test error: $e');
     }

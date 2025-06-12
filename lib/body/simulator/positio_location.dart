@@ -1,13 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
+// import 'package:http/http.dart' as http; // Keep if still used for non-P2P things
 import 'dart:convert';
 import 'dart:math';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'dart:async';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:logging/logging.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart'; // Added for WebRTC
 import '../../constants.dart';
+
+// Add debug utils
+class WebRTCProvider {
+  static void debug(String message) {
+    print('[WebRTC] $message');
+  }
+}
 
 class GPSDevice extends StatefulWidget {
   const GPSDevice({super.key});
@@ -20,50 +28,388 @@ class _GPSDeviceState extends State<GPSDevice> {
   String _serialNumber = '';
   String _baseUrl = Constants.uri;
   Position? _location;
-  Position? _currentPosition; // Added missing field
+  Position? _currentPosition;
   String? _errorMessage;
   bool _loading = false;
-  bool _updating = false;
+  bool _updating = false; // For periodic backend updates
   DateTime? _lastUpdateTime;
   Timer? _periodicTimer;
+  // Timer? _streamingTimer; // This might be replaced or repurposed by P2P data channel sending
+  Timer? _heartbeatTimer;
   LocationPermission? _permissionStatus;
 
   // WebSocket related variables
   IO.Socket? _socket;
   bool _isSocketConnected = false;
+
+  // WebRTC P2P related variables
+  RTCPeerConnection? _peerConnection;
+  RTCDataChannel? _dataChannel;
+  bool _isPeerConnected = false; // True if P2P data channel is open and active
+  // _isStreaming is used by _startPeerStream and _stopLocationStream to manage the P2P streaming state
+  bool _isP2PStreaming =
+      false; // Renamed for clarity to distinguish from general streaming
+
+  // Logger
   final Logger _logger = Logger('GPSDevice');
-  Timer? _heartbeatTimer;
+
+  // Configuration for ICE servers
+  final Map<String, dynamic> _iceServers = {
+    'iceServers': [
+      {'url': 'stun:stun.l.google.com:19302'},
+      // Add more STUN/TURN servers if needed
+    ],
+  };
+
+  final Map<String, dynamic> _rtcPeerConnectionConstraints = {
+    'mandatory': {},
+    'optional': [
+      {'DtlsSrtpKeyAgreement': true},
+    ],
+  };
+
+  String get _formattedLastUpdateTime =>
+      _lastUpdateTime != null
+          ? '${_lastUpdateTime!.hour.toString().padLeft(2, '0')}:${_lastUpdateTime!.minute.toString().padLeft(2, '0')}:${_lastUpdateTime!.second.toString().padLeft(2, '0')}'
+          : '--:--:--';
+
+  void _showSuccessToast(String message) {
+    Fluttertoast.showToast(
+      msg: message,
+      toastLength: Toast.LENGTH_SHORT,
+      gravity: ToastGravity.BOTTOM,
+      backgroundColor: Colors.green,
+      textColor: Colors.white,
+    );
+  }
+
+  void _showErrorToast(String message) {
+    Fluttertoast.showToast(
+      msg: message,
+      toastLength: Toast.LENGTH_LONG,
+      gravity: ToastGravity.BOTTOM,
+      backgroundColor: Colors.red,
+      textColor: Colors.white,
+    );
+  }
+
+  void stopPeriodicUpdates() {
+    _periodicTimer?.cancel();
+    _periodicTimer = null;
+    setState(() => _updating = false);
+    _showSuccessToast('Stopped periodic backend updates.');
+  }
+
+  void startPeriodicUpdates() {
+    if (_permissionStatus != LocationPermission.whileInUse &&
+        _permissionStatus != LocationPermission.always) {
+      _showErrorToast('Location permission not granted for periodic updates.');
+      return;
+    }
+
+    if (_updating) {
+      _showErrorToast('Periodic updates are already running.');
+      return;
+    }
+
+    if (!_isSocketConnected) {
+      _showErrorToast(
+        'Signaling server not connected. Cannot start periodic updates.',
+      );
+      // Optionally, try to connect: _connectWebSocket();
+      return;
+    }
+
+    setState(() {
+      _updating = true;
+    });
+
+    _periodicTimer?.cancel(); // Cancel any existing timer first
+    _periodicTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _updateLocation(
+        viaP2P: false,
+      ); // Periodic updates go to backend via WebSocket/HTTP
+    });
+    _showSuccessToast('Started periodic backend updates.');
+  }
+
+  void _simulateRandomMovement({bool forceWebSocket = false}) async {
+    if (!_isSocketConnected || _serialNumber.isEmpty) {
+      _showErrorToast('Not connected or S/N missing for simulation.');
+      return;
+    }
+    // Generate data
+    final newLat =
+        (_currentPosition?.latitude ?? -15.0) +
+        (Random().nextDouble() * 0.02 - 0.01);
+    final newLng =
+        (_currentPosition?.longitude ?? 28.0) +
+        (Random().nextDouble() * 0.02 - 0.01);
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toDouble();
+    final altitude =
+        _currentPosition?.altitude ?? 100.0 + Random().nextDouble() * 20;
+    final speed = _currentPosition?.speed ?? Random().nextDouble() * 10;
+    final accuracy =
+        _currentPosition?.accuracy ?? Random().nextDouble() * 5 + 5;
+
+    if (forceWebSocket) {
+      _logger.info('Simulating random movement via WebSocket (forced).');
+      final locationPayload = {
+        'serialNumber': _serialNumber,
+        'latitude': newLat,
+        'longitude': newLng,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+        'altitude': altitude,
+        'speed': speed,
+        'accuracy': accuracy,
+        'simulated': true,
+      };
+      if (_isSocketConnected) {
+        // _socket is non-null if _isSocketConnected
+        _socket!.emit('location-update', locationPayload);
+        _showSuccessToast('Random location simulated via WebSocket.');
+        if (mounted) {
+          setState(() {
+            _lastUpdateTime = DateTime.now();
+          });
+        }
+      } else {
+        _showErrorToast('WebSocket not connected for forced simulation.');
+      }
+      return;
+    }
+
+    // Default behavior (P2P first, then WebSocket fallback via _sendLocationData)
+    if (_isPeerConnected &&
+        _isP2PStreaming &&
+        _dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true},
+      );
+      _showSuccessToast('Random location simulated via P2P.');
+    } else if (_isSocketConnected) {
+      _logger.info(
+        'Simulating random movement via WebSocket (P2P not active/streaming).',
+      );
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true},
+      );
+      _showSuccessToast('Random location simulated via WebSocket.');
+    } else {
+      _showErrorToast(
+        'Cannot simulate: No P2P or WebSocket connection available.',
+      );
+    }
+  }
+
+  void _simulateCircularMovement({bool forceWebSocket = false}) async {
+    if (!_isSocketConnected || _serialNumber.isEmpty) {
+      _showErrorToast('Not connected or S/N missing for simulation.');
+      return;
+    }
+    _logger.info(
+      'Simulating circular movement (forceWebSocket: $forceWebSocket)...',
+    );
+    // Dummy data for circular movement
+    final newLat =
+        (_currentPosition?.latitude ?? -15.0) +
+        (sin(DateTime.now().second / 60 * 2 * pi) * 0.01);
+    final newLng =
+        (_currentPosition?.longitude ?? 28.0) +
+        (cos(DateTime.now().second / 60 * 2 * pi) * 0.01);
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toDouble();
+    final altitude = _currentPosition?.altitude ?? 100.0;
+    final speed = _currentPosition?.speed ?? 5.0;
+    final accuracy = _currentPosition?.accuracy ?? 10.0;
+
+    if (forceWebSocket) {
+      _logger.info('Simulating circular movement via WebSocket (forced).');
+      final locationPayload = {
+        'serialNumber': _serialNumber,
+        'latitude': newLat,
+        'longitude': newLng,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+        'altitude': altitude,
+        'speed': speed,
+        'accuracy': accuracy,
+        'simulated': true,
+        'pattern': 'circular',
+      };
+      if (_isSocketConnected) {
+        _socket!.emit('location-update', locationPayload);
+        _showSuccessToast('Circular location simulated via WebSocket.');
+        if (mounted) {
+          setState(() {
+            _lastUpdateTime = DateTime.now();
+          });
+        }
+      } else {
+        _showErrorToast('WebSocket not connected for forced simulation.');
+      }
+      return;
+    }
+
+    if (_isPeerConnected &&
+        _isP2PStreaming &&
+        _dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true, 'pattern': 'circular'},
+      );
+      _showSuccessToast('Circular location simulated via P2P.');
+    } else if (_isSocketConnected) {
+      _logger.info(
+        'Simulating circular movement via WebSocket (P2P not active/streaming).',
+      );
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true, 'pattern': 'circular'},
+      );
+      _showSuccessToast('Circular location simulated via WebSocket.');
+    } else {
+      _showErrorToast(
+        'Cannot simulate: No P2P or WebSocket connection available.',
+      );
+    }
+  }
+
+  void _simulateLinearMovement({bool forceWebSocket = false}) async {
+    if (!_isSocketConnected || _serialNumber.isEmpty) {
+      _showErrorToast('Not connected or S/N missing for simulation.');
+      return;
+    }
+    _logger.info(
+      'Simulating linear movement (forceWebSocket: $forceWebSocket)...',
+    );
+    // Dummy data for linear movement
+    final newLat =
+        (_currentPosition?.latitude ?? -15.0) +
+        (DateTime.now().second * 0.0001); // Simple linear change
+    final newLng =
+        (_currentPosition?.longitude ?? 28.0) +
+        (DateTime.now().second * 0.0001);
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toDouble();
+    final altitude = _currentPosition?.altitude ?? 100.0;
+    final speed = _currentPosition?.speed ?? 5.0;
+    final accuracy = _currentPosition?.accuracy ?? 10.0;
+
+    if (forceWebSocket) {
+      _logger.info('Simulating linear movement via WebSocket (forced).');
+      final locationPayload = {
+        'serialNumber': _serialNumber,
+        'latitude': newLat,
+        'longitude': newLng,
+        'timestamp': DateTime.now().toUtc().toIso8601String(),
+        'altitude': altitude,
+        'speed': speed,
+        'accuracy': accuracy,
+        'simulated': true,
+        'pattern': 'linear',
+      };
+      if (_isSocketConnected) {
+        _socket!.emit('location-update', locationPayload);
+        _showSuccessToast('Linear location simulated via WebSocket.');
+        if (mounted) {
+          setState(() {
+            _lastUpdateTime = DateTime.now();
+          });
+        }
+      } else {
+        _showErrorToast('WebSocket not connected for forced simulation.');
+      }
+      return;
+    }
+
+    if (_isPeerConnected &&
+        _isP2PStreaming &&
+        _dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true, 'pattern': 'linear'},
+      );
+      _showSuccessToast('Linear location simulated via P2P.');
+    } else if (_isSocketConnected) {
+      _logger.info(
+        'Simulating linear movement via WebSocket (P2P not active/streaming).',
+      );
+      _sendLocationData(
+        newLat,
+        newLng,
+        timestamp,
+        altitude: altitude,
+        speed: speed,
+        accuracy: accuracy,
+        extraData: {'simulated': true, 'pattern': 'linear'},
+      );
+      _showSuccessToast('Linear location simulated via WebSocket.');
+    } else {
+      _showErrorToast(
+        'Cannot simulate: No P2P or WebSocket connection available.',
+      );
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _requestPermission();
-      // Initialize current position after permission
-      _currentPosition = await Geolocator.getCurrentPosition();
-      if (mounted) {
-        setState(() {});
-      }
+      // _initializeLocation(); // Location init might depend on permissions
+      // Do not auto-connect WebSocket here, let user/logic decide.
+      // _connectWebSocket(); // Moved to be called explicitly or on demand
     });
   }
 
   @override
   void dispose() {
-    _disconnectWebSocket();
-    stopPeriodicUpdates();
+    _stopP2PLocationStream(); // Stop P2P streaming
+    _disconnectWebSocket(); // Disconnect signaling
+    stopPeriodicUpdates(); // Stop backend updates
+    _heartbeatTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _requestPermission() async {
+    if (!mounted) return;
     setState(() {
-      _loading = true;
       _errorMessage = null;
     });
 
     try {
-      // Check if location services are enabled
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
+        if (!mounted) return;
+        // Simple dialog for enabling services
         await showDialog(
           context: context,
           barrierDismissible: false,
@@ -84,64 +430,61 @@ class _GPSDeviceState extends State<GPSDevice> {
                 ],
               ),
         );
-
-        // Recheck if services were enabled
-        serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        serviceEnabled = await Geolocator.isLocationServiceEnabled(); // Recheck
         if (!serviceEnabled) {
           throw Exception('Location services are still disabled');
         }
       }
 
-      // Check current permission status
       _permissionStatus = await Geolocator.checkPermission();
 
       if (_permissionStatus == LocationPermission.denied) {
-        // Show explanation before requesting permission
-        bool shouldRequest =
-            await showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder:
-                  (BuildContext context) => AlertDialog(
-                    title: const Text('Location Permission Required'),
-                    content: const Text(
-                      'This app needs access to location to update GPS coordinates. '
-                      'Would you like to grant permission?',
-                    ),
-                    actions: [
-                      TextButton(
-                        child: const Text('Deny'),
-                        onPressed: () => Navigator.of(context).pop(false),
-                      ),
-                      TextButton(
-                        child: const Text('Continue'),
-                        onPressed: () => Navigator.of(context).pop(true),
-                      ),
-                    ],
+        if (!mounted) return;
+        // Corrected showDialog call for permission request
+        bool? shouldRequestResult = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder:
+              (BuildContext context) => AlertDialog(
+                title: const Text('Location Permission Required'),
+                content: const Text(
+                  'This app needs access to your location to function properly. Would you like to grant permission?',
+                ),
+                actions: [
+                  TextButton(
+                    child: const Text('Deny'),
+                    onPressed: () => Navigator.of(context).pop(false),
                   ),
-            ) ??
-            false;
+                  TextButton(
+                    child: const Text('Grant'),
+                    onPressed: () => Navigator.of(context).pop(true),
+                  ),
+                ],
+              ),
+        );
+
+        bool shouldRequest = shouldRequestResult ?? false; // Handle null case
 
         if (shouldRequest) {
           _permissionStatus = await Geolocator.requestPermission();
           if (_permissionStatus == LocationPermission.denied) {
-            throw Exception('Location permission denied');
+            throw Exception('Location permission denied by user');
           }
         } else {
-          throw Exception('Permission request declined');
+          throw Exception('Permission request declined by user');
         }
       }
 
       if (_permissionStatus == LocationPermission.deniedForever) {
+        if (!mounted) return;
         await showDialog(
           context: context,
           barrierDismissible: false,
           builder:
               (BuildContext context) => AlertDialog(
-                title: const Text('Permission Required'),
+                title: const Text('Permission Permanently Denied'),
                 content: const Text(
-                  'Location permission is permanently denied. '
-                  'Please enable it in your device settings.',
+                  'Location permission is permanently denied. Please enable it in your device settings.',
                 ),
                 actions: [
                   TextButton(
@@ -154,215 +497,571 @@ class _GPSDeviceState extends State<GPSDevice> {
                 ],
               ),
         );
-        throw Exception('Location permissions are permanently denied');
+        throw Exception(
+          'Location permissions are permanently denied. Please enable in settings.',
+        );
       }
 
-      // Initialize location after permissions are granted
-      await _initializeLocation();
-      _showSuccessToast('Location permission granted');
+      if (_permissionStatus == LocationPermission.whileInUse ||
+          _permissionStatus == LocationPermission.always) {
+        await _initializeLocation(); // Get initial location if permission granted
+        _showSuccessToast('Location permission granted.');
+      } else {
+        // This case should ideally be handled by the checks above, but as a fallback:
+        throw Exception('Location permission not granted sufficiently.');
+      }
     } catch (e) {
-      setState(() => _errorMessage = e.toString());
-      _showErrorToast(_errorMessage!);
-    } finally {
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _errorMessage = e.toString());
+        _showErrorToast('Permission Error: ${e.toString()}');
+      }
     }
   }
 
   Future<void> _initializeLocation() async {
+    if (_permissionStatus != LocationPermission.whileInUse &&
+        _permissionStatus != LocationPermission.always) {
+      _showErrorToast('Location permission not granted.');
+      return;
+    }
     try {
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
-      setState(() {
-        _location = position;
-        _lastUpdateTime = DateTime.now();
-      });
+      if (mounted) {
+        setState(() {
+          _location = position;
+          _currentPosition = position;
+          _lastUpdateTime = DateTime.now();
+        });
+      }
     } catch (e) {
       throw Exception('Error getting initial location: $e');
     }
   }
 
-  Future<void> _updateLocation() async {
-    if (_updating || _loading) return;
+  Future<void> _updateLocation({bool viaP2P = true}) async {
+    if (_loading) return;
 
     setState(() {
-      _updating = true;
+      _loading = true;
       _errorMessage = null;
     });
 
     try {
-      // Verify permissions before updating
-      if (_permissionStatus != LocationPermission.whileInUse &&
-          _permissionStatus != LocationPermission.always) {
-        await _requestPermission();
-      }
-
-      final position = await Geolocator.getCurrentPosition(
+      Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
-
+      if (!mounted) return;
       setState(() {
-        _location = position;
+        _currentPosition = position;
+        _location = position; // Update general location too
         _lastUpdateTime = DateTime.now();
+        _loading = false;
       });
 
-      if (_serialNumber.isEmpty || _baseUrl.isEmpty) {
-        throw Exception('Serial number and base URL are required');
+      if (viaP2P &&
+          _isPeerConnected &&
+          _isP2PStreaming &&
+          _dataChannel != null) {
+        _sendLocationData(
+          position.latitude,
+          position.longitude,
+          position.timestamp.millisecondsSinceEpoch
+              .toDouble(), // Removed unnecessary null-aware operator
+          altitude: position.altitude,
+          speed: position.speed,
+          accuracy: position.accuracy,
+        );
+      } else if (!viaP2P) {
+        // Send to backend if not P2P or explicitly told so
+        _sendLocationToBackend(
+          _serialNumber,
+          position.latitude,
+          position.longitude,
+        );
       }
-
-      final finalBaseUrl = _baseUrl.isNotEmpty ? _baseUrl : Constants.uri;
-      await _sendLocationToBackend(
-        finalBaseUrl,
-        _serialNumber,
-        position.latitude,
-        position.longitude,
-      );
-
-      _showSuccessToast('Location updated successfully');
     } catch (e) {
-      setState(() => _errorMessage = e.toString());
-      _showErrorToast(_errorMessage!);
-    } finally {
-      setState(() => _updating = false);
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = e.toString();
+        _loading = false;
+      });
+      _showErrorToast('Error updating location: $e');
+      _logger.severe('Error updating location: $e');
     }
   }
 
   Future<void> _sendLocationToBackend(
-    String baseUrl,
     String serialNumber,
     double latitude,
     double longitude,
+    // Removed baseUrl as it's a class member _baseUrl
   ) async {
-    try {
-      final response = await http
-          .patch(
-            Uri.parse('$baseUrl/api/update-location'),
-            body: jsonEncode({
-              'serialNumber': serialNumber,
-              'latitude': latitude,
-              'longitude': longitude,
-              'timestamp': DateTime.now().toIso8601String(),
-            }),
-            headers: {'Content-Type': 'application/json'},
-          )
-          .timeout(
-            const Duration(seconds: 10),
-            onTimeout: () => throw Exception('Connection timeout'),
-          );
+    if (serialNumber.isEmpty) {
+      _showErrorToast('Serial number is empty. Cannot send to backend.');
+      return;
+    }
+    // This method now primarily sends via WebSocket for backend updates,
+    // P2P data is handled by _sendLocationData via data channel.
+    final locationPayload = {
+      'serialNumber': serialNumber,
+      'latitude': latitude,
+      'longitude': longitude,
+      'timestamp': DateTime.now().toUtc().toIso8601String(),
+      // Add other relevant fields like accuracy, speed, altitude if available
+      // from _currentPosition
+      'accuracy': _currentPosition?.accuracy,
+      'speed': _currentPosition?.speed,
+      'altitude': _currentPosition?.altitude,
+    };
 
-      if (response.statusCode != 200) {
-        throw Exception(
-          'Server error: ${response.statusCode} - ${response.body}',
+    if (_isSocketConnected && _socket != null) {
+      _logger.info(
+        'Sending location to backend via WebSocket: $locationPayload',
+      );
+      _socket!.emit('location-update', locationPayload); // Added null check
+      _showSuccessToast('Location sent to backend.');
+    } else {
+      _showErrorToast(
+        'WebSocket not connected. Cannot send location to backend.',
+      );
+      _logger.warning(
+        'WebSocket not connected. Failed to send location to backend.',
+      );
+      // Optionally, implement HTTP fallback here if desired
+    }
+  }
+
+  // Method to send location data (could be real or simulated)
+  // This will be the primary method for sending data over P2P or WebSocket
+  void _sendLocationData(
+    double lat,
+    double lng,
+    double timestamp, {
+    double? altitude,
+    double? speed,
+    double? accuracy,
+    Map<String, dynamic>? extraData,
+  }) {
+    final Map<String, dynamic> payload = {
+      'serialNumber': _serialNumber,
+      'latitude': lat,
+      'longitude': lng,
+      'timestamp': timestamp, // Device's original timestamp
+      'altitude': altitude,
+      'speed': speed,
+      'accuracy': accuracy,
+      ...(extraData ?? {}),
+    };
+
+    if (_isP2PStreaming &&
+        _isPeerConnected &&
+        _dataChannel != null &&
+        _dataChannel!.state == RTCDataChannelState.RTCDataChannelOpen) {
+      try {
+        _dataChannel!.send(RTCDataChannelMessage(jsonEncode(payload)));
+        _logger.info(
+          'Location sent via P2P Data Channel: SN $_serialNumber, $lat, $lng',
         );
+        // Toast for P2P might be too noisy, consider conditional feedback
+        // _showSuccessToast('Location streamed via P2P.');
+        if (mounted) {
+          setState(() {
+            _lastUpdateTime = DateTime.now(); // Reflect P2P send time locally
+          });
+        }
+      } catch (e) {
+        _logger.severe('Error sending data via P2P Data Channel: $e');
+        _showErrorToast('P2P send error: $e');
+        // Fallback to WebSocket if P2P send fails?
+        // _sendLocationToBackend(_serialNumber, lat, lng);
       }
-
-      // Also send location via WebSocket if connected
-      _sendLocationViaWebSocket(serialNumber, latitude, longitude);
-    } catch (error) {
-      throw Exception('Failed to update location: $error');
+    } else if (_isSocketConnected && _socket != null) {
+      // Fallback to WebSocket if P2P not active/ready
+      _logger.info(
+        'P2P not active/ready. Sending location via WebSocket: $payload',
+      );
+      _socket!.emit('location-update', payload);
+      // _showSuccessToast('Location sent via WebSocket (P2P fallback).');
+    } else {
+      _logger.warning(
+        'Cannot send location data: No P2P or WebSocket connection available.',
+      );
+      _showErrorToast('Not connected. Cannot send location.');
     }
   }
 
   // WebSocket connection methods
   void _connectWebSocket() {
-    if (_isSocketConnected || _baseUrl.isEmpty) return;
-
-    try {
-      final finalBaseUrl = _baseUrl.isNotEmpty ? _baseUrl : Constants.uri;
-
-      _socket = IO.io(finalBaseUrl, <String, dynamic>{
-        'transports': ['websocket'],
-        'autoConnect': false,
-      });
-
-      _socket!.connect();
-
-      _socket!.on('connect', (_) {
-        setState(() => _isSocketConnected = true);
-        _logger.info('WebSocket connected');
-        _showSuccessToast('Real-time connection established');
-
-        // Register device with server
-        if (_serialNumber.isNotEmpty) {
-          _registerDevice();
-        }
-
-        // Start heartbeat
-        _startHeartbeat();
-      });
-
-      _socket!.on('disconnect', (_) {
-        setState(() => _isSocketConnected = false);
-        _logger.info('WebSocket disconnected');
-        _showErrorToast('Real-time connection lost');
-        _stopHeartbeat();
-      });
-
-      _socket!.on('connect_error', (error) {
-        setState(() => _isSocketConnected = false);
-        _logger.severe('WebSocket connection error: $error');
-        _showErrorToast('Failed to establish real-time connection');
-      });
-
-      _socket!.on('pong', (_) {
-        _logger.fine('Heartbeat pong received');
-      });
-    } catch (e) {
-      _logger.severe('Error initializing WebSocket: $e');
-      _showErrorToast('WebSocket setup failed: $e');
+    if (_serialNumber.isEmpty) {
+      _showErrorToast('Serial number is required to connect.');
+      _logger.warning('Serial number is empty, WebSocket connection aborted.');
+      return;
     }
-  }
+    if (_isSocketConnected && _socket != null && _socket!.connected) {
+      // Added null check for _socket.connected
+      _logger.info('WebSocket already connected.');
+      // _showSuccessToast('Already connected to signaling server.');
+      _registerDevice(); // Re-register if needed, or ensure it's idempotent
+      _initializePeerHandling(); // Ensure P2P handlers are set up
+      return;
+    }
+    if (_baseUrl.isEmpty) {
+      _showErrorToast('Server URL is not set.');
+      _logger.severe('Base URL for WebSocket is empty.');
+      return;
+    }
 
-  void _disconnectWebSocket() {
-    _stopHeartbeat();
-    if (_socket != null) {
-      _socket!.disconnect();
-      _socket!.dispose();
-      _socket = null;
-      setState(() => _isSocketConnected = false);
+    _logger.info('Connecting to WebSocket: $_baseUrl for S/N: $_serialNumber');
+    try {
+      _socket = IO.io(_baseUrl, <String, dynamic>{
+        'transports': ['websocket'],
+        'autoConnect': false, // We call connect manually
+        'query': {
+          'serialNumber': _serialNumber,
+          'deviceType': 'flutter-gps-device',
+        },
+      });
+
+      _socket!.onConnect((_) {
+        // Added null check
+        _logger.info('WebSocket Connected: ${_socket!.id}'); // Added null check
+        if (!mounted) return;
+        setState(() {
+          _isSocketConnected = true;
+        });
+        _registerDevice();
+        _initializePeerHandling(); // Setup P2P listeners AFTER socket is connected
+        _startHeartbeat();
+        _showSuccessToast('Connected to signaling server.');
+      });
+
+      _socket!.onDisconnect((reason) {
+        // Added null check
+        _logger.info('WebSocket Disconnected: $reason');
+        if (!mounted) return;
+        setState(() {
+          _isSocketConnected = false;
+          _isPeerConnected = false; // P2P depends on signaling
+          _isP2PStreaming = false;
+        });
+        _stopHeartbeat();
+        _showErrorToast('Disconnected from signaling server.');
+        // Consider cleanup for _peerConnection and _dataChannel here
+        _peerConnection
+            ?.close(); // Keep null-aware for safety, might be called when _peerConnection is already null
+        _peerConnection = null;
+        _dataChannel?.close(); // Keep null-aware
+        _dataChannel = null;
+      });
+
+      _socket!.onConnectError((err) {
+        // Added null check
+        _logger.severe('WebSocket Connect Error: $err');
+        if (!mounted) return;
+        setState(() {
+          _isSocketConnected = false;
+        });
+        _showErrorToast('Signaling connection error.');
+      });
+
+      _socket!.onError((err) {
+        // Added null check
+        _logger.severe('WebSocket Error: $err');
+        // _showErrorToast('Signaling error.'); // Can be noisy
+      });
+
+      _socket!.connect(); // Added null check
+    } catch (e) {
+      _logger.severe('WebSocket connection attempt failed: $e');
+      _showErrorToast('Failed to initiate connection.');
+      if (!mounted) return;
+      setState(() {
+        _isSocketConnected = false;
+      });
     }
   }
 
   void _registerDevice() {
-    if (_socket != null && _isSocketConnected && _serialNumber.isNotEmpty) {
+    if (_isSocketConnected && _serialNumber.isNotEmpty && _socket != null) {
+      final deviceInfo = {
+        'model': 'Flutter GPS Device',
+        'platform': Theme.of(context).platform.toString(),
+        // Add other device specific info if needed
+      };
+      _logger.info(
+        'Registering device with S/N: $_serialNumber, Info: $deviceInfo',
+      );
       _socket!.emit('register-device', {
+        // Added null check
         'serialNumber': _serialNumber,
-        'deviceInfo': {
-          'platform': 'Flutter',
-          'timestamp': DateTime.now().toIso8601String(),
-        },
+        'deviceInfo': deviceInfo,
       });
-      _logger.info('Device registered with serial: $_serialNumber');
+    } else {
+      _logger.warning(
+        'Cannot register device: WebSocket not connected or S/N missing.',
+      );
     }
   }
 
-  void _sendLocationViaWebSocket(
-    String serialNumber,
-    double latitude,
-    double longitude,
-  ) {
-    if (_socket != null && _isSocketConnected) {
-      final locationData = {
-        'serialNumber': serialNumber,
-        'latitude': latitude,
-        'longitude': longitude,
-        'timestamp': DateTime.now().toIso8601String(),
-        'accuracy': _location?.accuracy,
-        'speed': _location?.speed,
-        'altitude': _location?.altitude,
-      };
-
-      _socket!.emit('location-update', locationData);
-      _logger.info('Location sent via WebSocket: $latitude, $longitude');
+  // P2P Initialization and Signaling
+  Future<void> _initializeWebRTC() async {
+    _logger.info('Initializing WebRTC Peer Connection...');
+    if (_peerConnection != null) {
+      _logger.info(
+        'Closing existing peer connection before creating a new one.',
+      );
+      await _peerConnection!.close();
+      _peerConnection = null;
+      _dataChannel?.close();
+      _dataChannel = null;
+      if (mounted)
+        setState(() {
+          _isPeerConnected = false;
+        });
     }
+
+    _peerConnection = await createPeerConnection(
+      _iceServers,
+      _rtcPeerConnectionConstraints,
+    );
+
+    _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
+      if (candidate != null && _isSocketConnected && _socket != null) {
+        _logger.info('Sending ICE candidate: ${candidate.toMap()}');
+        _socket!.emit('device-signal', {
+          // Added null check
+          'deviceId': _serialNumber,
+          'signal': {'type': 'candidate', 'candidate': candidate.toMap()},
+        });
+      }
+    };
+
+    _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
+      _logger.info('ICE Connection State: $state');
+      if (!mounted) return;
+      // Potentially update UI based on state (e.g., connecting, connected, failed)
+      if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
+          state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+        // This indicates ICE negotiation is complete. Data channel 'open' is the true P2P connected state.
+      } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed ||
+          state == RTCIceConnectionState.RTCIceConnectionStateDisconnected ||
+          state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
+        setState(() {
+          _isPeerConnected = false;
+          // _isP2PStreaming = false; // Stream might still be "on" conceptually, but not working
+        });
+        _showErrorToast("P2P Connection Failed/Lost");
+      }
+    };
+
+    _peerConnection!.onDataChannel = (RTCDataChannel channel) {
+      _logger.info('Data Channel received: ${channel.label}');
+      _dataChannel = channel;
+      _setupDataChannelListeners();
+    };
+  }
+
+  Future<void> _createDataChannel() async {
+    if (_peerConnection == null) {
+      _logger.warning(
+        'PeerConnection not initialized. Cannot create data channel.',
+      );
+      return;
+    }
+    _logger.info('Creating Data Channel...');
+    RTCDataChannelInit dataChannelInit = RTCDataChannelInit();
+    // dataChannelInit.ordered = true; // Ensure ordered delivery if needed
+    _dataChannel = await _peerConnection!.createDataChannel(
+      'locationDataChannel',
+      dataChannelInit,
+    );
+    _setupDataChannelListeners();
+  }
+
+  void _setupDataChannelListeners() {
+    if (_dataChannel == null) return;
+
+    _dataChannel!.onDataChannelState = (RTCDataChannelState state) {
+      _logger.info('Data Channel State: $state');
+      if (!mounted) return;
+      if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        setState(() {
+          _isPeerConnected = true;
+        });
+        _showSuccessToast('P2P Data Channel Open!');
+        // If _isP2PStreaming is true, we can now send data.
+        // Example: _dataChannel!.send(RTCDataChannelMessage('Hello from Flutter P2P!'));
+        // Notify web client that this device's P2P is ready
+        if (_socket != null && _isSocketConnected) {
+          _socket!.emit('p2p-device-channel-ready', {
+            'deviceId': _serialNumber,
+          });
+        }
+      } else {
+        setState(() {
+          _isPeerConnected = false;
+        });
+        if (state == RTCDataChannelState.RTCDataChannelClosed) {
+          _showErrorToast('P2P Data Channel Closed.');
+        }
+      }
+    };
+
+    _dataChannel!.onMessage = (RTCDataChannelMessage message) {
+      _logger.info('P2P Data received: ${message.text}');
+      // Handle incoming P2P messages if web client sends any (e.g., acknowledgments, commands)
+      // For now, Flutter device is primarily a sender.
+    };
+  }
+
+  Future<void> _initiateP2PConnection() async {
+    if (!_isSocketConnected || _socket == null) {
+      // _socket == null check is still relevant here before it's used.
+      _showErrorToast('Signaling server not connected. Cannot initiate P2P.');
+      _logger.warning('Cannot initiate P2P: Signaling server not connected.');
+      return;
+    }
+    if (_peerConnection != null && _isPeerConnected) {
+      _logger.info("P2P connection already active or in progress.");
+      // _showSuccessToast("P2P already active.");
+      return;
+    }
+
+    _logger.info('Initiating P2P connection with S/N: $_serialNumber');
+    await _initializeWebRTC(); // Initialize PeerConnection
+    await _createDataChannel(); // Create DataChannel as initiator
+
+    try {
+      RTCSessionDescription offer = await _peerConnection!.createOffer();
+      await _peerConnection!.setLocalDescription(offer);
+      _logger.info('Offer created and set as local description. Sending to web client...');
+      _socket!.emit('device-signal', {
+        'deviceId': _serialNumber,
+        'signal': {'type': 'offer', 'sdp': offer.sdp}
+      });
+      _showSuccessToast('P2P connection offer sent.');
+    } catch (e) {
+      _logger.severe('Error creating or sending P2P offer: $e');
+      _showErrorToast('P2P Offer Error: $e');
+      await _cleanupP2PResources(); // Await cleanup
+    }
+  }
+
+  void _initializePeerHandling() {
+    if (!_isSocketConnected || _socket == null) {
+      _logger.warning(
+        'Cannot initialize P2P event handlers: WebSocket not connected or socket is null.',
+      );
+      return;
+    }
+    _logger.info('Initializing P2P event handlers on WebSocket...');
+
+    // Clear existing P2P listeners to prevent multiple registrations
+    _socket!.off('incoming-p2p-signal-from-web'); // Added null check
+    _socket!.off('p2p-web-client-ready'); // Added null check
+    _socket!.off('p2p-web-client-disconnected'); // Added null check
+    _socket!.off('p2p-target-not-found'); // Added null check
+
+    // Handle signals from web client (answer, ICE candidates)
+    _socket!.on('incoming-p2p-signal-from-web', (data) async {
+      // Added null check
+      _logger.info('Received signal from web client: $data');
+      if (_peerConnection == null) {
+        _logger.warning('PeerConnection not initialized. Ignoring signal.');
+        // This might happen if web client sends signal before Flutter initiates.
+        // Consider if Flutter should also be able to receive an offer. For now, Flutter initiates.
+        return;
+      }
+
+      final signal = data['signal'];
+      final String type = signal['type'];
+
+      try {
+        if (type == 'answer') {
+          final sdp = signal['sdp'];
+          RTCSessionDescription answer = RTCSessionDescription(sdp, type);
+          _logger.info('Setting remote description (answer) from web client.');
+          await _peerConnection!.setRemoteDescription(answer);
+        } else if (type == 'candidate') {
+          final candidateMap = signal['candidate'];
+          RTCIceCandidate candidate = RTCIceCandidate(
+            candidateMap['candidate'],
+            candidateMap['sdpMid'],
+            candidateMap['sdpMLineIndex'],
+          );
+          _logger.info('Adding ICE candidate from web client.');
+          await _peerConnection!.addCandidate(candidate);
+        } else {
+          _logger.warning('Unknown signal type from web client: $type');
+        }
+      } catch (e) {
+        _logger.severe('Error processing signal from web client: $e');
+        _showErrorToast('P2P Signal Error: $e');
+      }
+    });
+
+    // Web client indicates its P2P data channel is ready
+    _socket!.on('p2p-web-client-ready', (data) {
+      // Added null check
+      final fromClientId = data['fromClientId'];
+      _logger.info('Web client ($fromClientId) P2P data channel is ready.');
+      // This device's data channel state (_isPeerConnected) is managed by its own onDataChannelState.
+      // This event is more for information or if specific action needed upon web client readiness.
+    });
+
+    // Web client explicitly disconnected P2P
+    _socket!.on('p2p-web-client-disconnected', (data) async { // Handler is already async
+      final fromClientId = data['fromClientId'];
+      final reason = data['reason'];
+      _logger.info('Web client ($fromClientId) disconnected P2P. Reason: $reason');
+      _showErrorToast('Peer disconnected: $reason');
+      await _cleanupP2PResources(); // Await cleanup
+       if(mounted) setState(() {
+          _isPeerConnected = false;
+          _isP2PStreaming = false; // Stop streaming if peer disconnects
+       });
+    });
+    
+    _socket!.on('p2p-target-not-found', (data) { 
+      // Added null check
+      final targetDeviceId = data['targetDeviceId'];
+      if (targetDeviceId == _serialNumber) {
+        // Should not happen if this device is the target
+        _logger.warning(
+          'Received p2p-target-not-found for this device. This is unexpected.',
+        );
+      } else {
+        // This device was trying to signal a web client that is no longer found by the server
+        _logger.warning(
+          'Server reported target web client for P2P not found for device $targetDeviceId.',
+        );
+        // If this device was trying to connect to a specific web client (not current model), handle here.
+      }
+    });
+  }
+
+  void _disconnectWebSocket() {
+    _logger.info('Disconnecting WebSocket...');
+    _stopHeartbeat();
+    _socket
+        ?.disconnect(); // Keep null-aware, _socket might be null if never connected
+    // _socket?.dispose(); // Dispose if you are completely done with the socket instance
+    // _socket = null; // Let onDisconnect handle state, but nullify if disposed
+    if (!mounted) return;
+    // State updates are handled in onDisconnect
   }
 
   void _startHeartbeat() {
-    _stopHeartbeat();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (_socket != null && _isSocketConnected) {
-        _socket!.emit('ping');
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (timer) {
+      if (_isSocketConnected && _socket != null) {
+        _socket!.emit('ping', {
+          'deviceId': _serialNumber,
+          'time': DateTime.now().toIso8601String(),
+        }); // Added null check
+        _logger.finer('Sent ping to server.');
       }
     });
   }
@@ -372,233 +1071,124 @@ class _GPSDeviceState extends State<GPSDevice> {
     _heartbeatTimer = null;
   }
 
-  // Simulation methods for testing
-  void _simulateRandomMovement() async {
-    if (!_isSocketConnected || _serialNumber.isEmpty) {
-      _showErrorToast('WebSocket not connected or serial number missing');
+  // Renamed from _startLocationStream to be P2P specific
+  void _startP2PLocationStream() async {
+    if (_serialNumber.isEmpty) {
+      _showErrorToast('Serial number is required to start P2P stream.');
+      return;
+    }
+    if (!_isSocketConnected) {
+      _showErrorToast('Signaling server not connected. Please connect first.');
+      // Attempt to connect to WebSocket if not already connected
+      _connectWebSocket();
+      // Wait a bit for connection, or handle async connection better
+      // For now, user might need to press again after connection establishes.
       return;
     }
 
-    try {
-      // Get current position or use a default
-      double baseLat = _currentPosition?.latitude ?? -1.2921; // Nairobi default
-      double baseLng = _currentPosition?.longitude ?? 36.8219;
-
-      // Generate random movement within ~1km radius
-      final random = Random();
-      double newLat = baseLat + (random.nextDouble() - 0.5) * 0.01;
-      double newLng = baseLng + (random.nextDouble() - 0.5) * 0.01;
-
-      await _sendLocationUpdate(_serialNumber, newLat, newLng);
-      _showSuccessToast('Random location simulated');
-    } catch (e) {
-      _showErrorToast('Simulation failed: $e');
-    }
-  }
-
-  void _simulateCircularMovement() async {
-    if (!_isSocketConnected || _serialNumber.isEmpty) {
-      _showErrorToast('WebSocket not connected or serial number missing');
+    if (_isP2PStreaming && _isPeerConnected) {
+      _showSuccessToast('P2P Location stream already active.');
       return;
     }
 
-    try {
-      double baseLat = _currentPosition?.latitude ?? -1.2921;
-      double baseLng = _currentPosition?.longitude ?? 36.8219;
-
-      // Circular movement pattern
-      double angle = DateTime.now().millisecondsSinceEpoch / 10000.0;
-      double radius = 0.005; // ~500m radius
-
-      double newLat = baseLat + radius * cos(angle);
-      double newLng = baseLng + radius * sin(angle);
-
-      await _sendLocationUpdate(_serialNumber, newLat, newLng);
-      _showSuccessToast('Circular movement simulated');
-    } catch (e) {
-      _showErrorToast('Simulation failed: $e');
-    }
-  }
-
-  void _simulateLinearMovement() async {
-    if (!_isSocketConnected || _serialNumber.isEmpty) {
-      _showErrorToast('WebSocket not connected or serial number missing');
-      return;
-    }
-
-    try {
-      double baseLat = _currentPosition?.latitude ?? -1.2921;
-      double baseLng = _currentPosition?.longitude ?? 36.8219;
-
-      // Linear movement (north-south)
-      double offset = (DateTime.now().millisecondsSinceEpoch % 60000) / 60000.0;
-      double newLat = baseLat + (offset - 0.5) * 0.01;
-      double newLng = baseLng;
-
-      await _sendLocationUpdate(_serialNumber, newLat, newLng);
-      _showSuccessToast('Linear movement simulated');
-    } catch (e) {
-      _showErrorToast('Simulation failed: $e');
-    }
-  }
-
-  void startPeriodicUpdates() {
-    if (_permissionStatus != LocationPermission.whileInUse &&
-        _permissionStatus != LocationPermission.always) {
-      _showErrorToast('Location permission required');
-      return;
-    }
-
-    // Connect to WebSocket for real-time updates
-    _connectWebSocket();
-
-    _periodicTimer?.cancel();
-    _periodicTimer = Timer.periodic(const Duration(minutes: 1), (_) {
-      _updateLocation();
+    setState(() {
+      _isP2PStreaming = true; // Indicate intent to stream
     });
-    _showSuccessToast('Started periodic updates (every 1 minute)');
+
+    await _initiateP2PConnection(); // This will set up peer connection and data channel
+
+    // Location sending will happen via _updateLocation or simulated movements
+    // if _isP2PStreaming and _isPeerConnected are true.
+    _showSuccessToast('P2P Location stream initiated.');
   }
 
-  void stopPeriodicUpdates() {
-    _periodicTimer?.cancel();
-    _periodicTimer = null;
-    _disconnectWebSocket();
-    setState(() => _updating = false);
-    _showSuccessToast('Stopped periodic updates');
-  }
-
-  void _showErrorToast(String message) {
-    Fluttertoast.showToast(
-      msg: message,
-      toastLength: Toast.LENGTH_LONG,
-      gravity: ToastGravity.TOP,
-      backgroundColor: Colors.red,
-      textColor: Colors.white,
-    );
-  }
-
-  void _showSuccessToast(String message) {
-    Fluttertoast.showToast(
-      msg: message,
-      toastLength: Toast.LENGTH_SHORT,
-      gravity: ToastGravity.TOP,
-      backgroundColor: Colors.green,
-      textColor: Colors.white,
-    );
-  }
-
-  String get _formattedLastUpdateTime {
-    if (_lastUpdateTime == null) return 'Never';
-    return 'Last updated: ${_lastUpdateTime!.hour}:${_lastUpdateTime!.minute.toString().padLeft(2, '0')}:${_lastUpdateTime!.second.toString().padLeft(2, '0')}';
-  }
-
-  // Add _sendLocationUpdate method
-  Future<void> _sendLocationUpdate(
-    String serialNumber,
-    double lat,
-    double lng,
-  ) async {
-    if (!mounted) return;
-
-    try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl/api/gpsModules/update-location'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'serialNumber': serialNumber,
-          'latitude': lat,
-          'longitude': lng,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        setState(() {
-          _lastUpdateTime = DateTime.now();
-        });
-      } else {
-        throw Exception('Failed to update location');
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'Failed to update location: $e';
-        });
-      }
-      _logger.warning('Failed to update location: $e');
+  // Renamed from _stopLocationStream
+  void _stopP2PLocationStream() async { // Made async
+    _logger.info('Stopping P2P Location Stream...');
+    if (!_isP2PStreaming && !_isPeerConnected) {
+        // _showSuccessToast("P2P stream already stopped.");
+        // return;
     }
+
+    if (mounted) {
+      setState(() {
+        _isP2PStreaming = false;
+      });
+    }
+
+    // Notify web client about P2P disconnect initiated by this device
+    if (_socket != null && _isSocketConnected && _serialNumber.isNotEmpty) {
+        _socket!.emit('p2p-device-disconnect', {
+            'deviceId': _serialNumber,
+            'reason': 'Device stopped streaming'
+        });
+    }
+    
+    await _cleanupP2PResources(); // Await cleanup
+    _showSuccessToast('P2P Location stream stopped.');
+  }
+
+  Future<void> _cleanupP2PResources() async { // Made async
+    _logger.info("Cleaning up P2P resources...");
+    _dataChannel?.close(); // RTCDataChannel.close() is synchronous
+    _dataChannel = null;
+    await _peerConnection?.close(); // RTCPeerConnection.close() is asynchronous
+    _peerConnection = null;
+    if (mounted) {
+      setState(() {
+        _isPeerConnected = false;
+        // _isP2PStreaming should be set by the calling function (_stopP2PLocationStream or error handlers)
+      });
+    }
+  }
+
+  Widget _buildDataRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 14)),
+          Flexible(
+            // Use Flexible for long values
+            child: Text(
+              value,
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              textAlign: TextAlign.end,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    // Example of how to use the new P2P streaming functions in UI:
+    // ElevatedButton(onPressed: _startP2PLocationStream, child: Text('Start P2P Stream')),
+    // ElevatedButton(onPressed: _stopP2PLocationStream, child: Text('Stop P2P Stream')),
+    // Text(_isPeerConnected ? "P2P Connected" : "P2P Disconnected"),
+    // Text(_isP2PStreaming ? "P2P Streaming ON" : "P2P Streaming OFF"),
+
+    // Make sure to also add a way to input Serial Number and connect to WebSocket:
+    // TextField(onChanged: (val) => _serialNumber = val, decoration: InputDecoration(labelText: 'Serial Number')),
+    // ElevatedButton(onPressed: _connectWebSocket, child: Text('Connect Signaling')),
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('GPS Device Simulator'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _requestPermission,
-            tooltip: 'Reset Permissions',
-          ),
-        ],
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Theme.of(context).colorScheme.onPrimary,
       ),
-      body: SingleChildScrollView(
-        child: Padding(
+      body: SafeArea(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_permissionStatus == LocationPermission.denied ||
-                  _permissionStatus == LocationPermission.deniedForever)
-                Card(
-                  color: Colors.red[100],
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      children: [
-                        const Text(
-                          'Location Permission Required',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.red,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ElevatedButton(
-                          onPressed: _requestPermission,
-                          child: const Text('Grant Permission'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              const SizedBox(height: 16),
-              TextField(
-                decoration: InputDecoration(
-                  labelText: 'server URL',
-                  hintText: 'Enter base URL',
-                  border: const OutlineInputBorder(),
-                  errorText:
-                      _baseUrl.isEmpty && _errorMessage != null
-                          ? 'Base URL is required'
-                          : null,
-                ),
-                onChanged: (value) => setState(() => _baseUrl = value.trim()),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                decoration: InputDecoration(
-                  labelText: 'Serial Number',
-                  hintText: 'Enter serial number',
-                  border: const OutlineInputBorder(),
-                  errorText:
-                      _serialNumber.isEmpty && _errorMessage != null
-                          ? 'Serial number is required'
-                          : null,
-                ),
-                onChanged:
-                    (value) => setState(() => _serialNumber = value.trim()),
-              ),
+              // Connection Status Card
               Card(
+                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -627,7 +1217,9 @@ class _GPSDeviceState extends State<GPSDevice> {
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Text(
-                              _isSocketConnected ? '🟢 Live' : '🔴 Offline',
+                              _isSocketConnected
+                                  ? '🟢 WS Live'
+                                  : '🔴 WS Offline',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -637,14 +1229,34 @@ class _GPSDeviceState extends State<GPSDevice> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 4),
+                      Text(
+                        _isPeerConnected
+                            ? 'P2P Connected'
+                            : (_isSocketConnected
+                                ? 'P2P Ready'
+                                : 'P2P Offline'),
+                        style: TextStyle(
+                          color:
+                              _isPeerConnected
+                                  ? Colors.blueAccent
+                                  : (_isSocketConnected
+                                      ? Colors.orangeAccent
+                                      : Colors.grey),
+                          fontSize: 12,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Text(
                         _isSocketConnected
-                            ? 'Real-time connection established'
-                            : 'No real-time connection',
+                            ? (_socket!.id != null
+                                ? 'Socket ID: ${_socket!.id}'
+                                : 'Real-time connection is active')
+                            : 'No connection to server',
                         style: TextStyle(
                           color:
                               _isSocketConnected ? Colors.green : Colors.grey,
+                          fontSize: 10,
                         ),
                       ),
                     ],
@@ -652,185 +1264,350 @@ class _GPSDeviceState extends State<GPSDevice> {
                 ),
               ),
               const SizedBox(height: 16),
+
+              // Configuration Card
               Card(
+                elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Location Information',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          if (_loading)
-                            const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                        ],
+                      const Text(
+                        'Configuration',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        decoration: InputDecoration(
+                          labelText: 'Serial Number',
+                          hintText: 'Enter device serial (e.g., GPS-123)',
+                          border: const OutlineInputBorder(),
+                          errorText:
+                              _serialNumber.isEmpty &&
+                                      _errorMessage != null &&
+                                      _errorMessage!.contains("Serial")
+                                  ? _errorMessage
+                                  : null,
+                        ),
+                        onChanged:
+                            (value) =>
+                                setState(() => _serialNumber = value.trim()),
+                        onSubmitted: (_) {
+                          if (_serialNumber.isNotEmpty && _baseUrl.isNotEmpty)
+                            _connectWebSocket();
+                        },
                       ),
                       const SizedBox(height: 8),
-                      if (_location != null) ...[
-                        Text(
-                          'Latitude: ${_location!.latitude.toStringAsFixed(6)}',
+                      TextField(
+                        decoration: InputDecoration(
+                          labelText: 'Server URL',
+                          hintText: 'e.g., http://localhost:3001',
+                          border: const OutlineInputBorder(),
                         ),
-                        Text(
-                          'Longitude: ${_location!.longitude.toStringAsFixed(6)}',
-                        ),
-                        Text(
-                          'Altitude: ${_location!.altitude.toStringAsFixed(2)} meters',
-                        ),
-                        Text(
-                          'Speed: ${_location!.speed.toStringAsFixed(2)} m/s',
-                        ),
-                        Text(
-                          'Accuracy: ${_location!.accuracy.toStringAsFixed(2)} meters',
-                        ),
-                        const SizedBox(height: 8),
-                        Text(_formattedLastUpdateTime),
-                      ] else
-                        const Text('No location data available'),
+                        controller: TextEditingController(text: _baseUrl)
+                          ..selection = TextSelection.fromPosition(
+                            TextPosition(offset: _baseUrl.length),
+                          ),
+                        onChanged:
+                            (value) => setState(() => _baseUrl = value.trim()),
+                        onSubmitted: (_) {
+                          if (_serialNumber.isNotEmpty && _baseUrl.isNotEmpty)
+                            _connectWebSocket();
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: Icon(
+                                _isSocketConnected
+                                    ? Icons.cloud_off
+                                    : Icons.cloud_queue,
+                              ),
+                              label: Text(
+                                _isSocketConnected
+                                    ? 'Disconnect'
+                                    : 'Connect WS',
+                              ),
+                              onPressed:
+                                  _serialNumber.isNotEmpty &&
+                                          _baseUrl.isNotEmpty
+                                      ? (_isSocketConnected
+                                          ? _disconnectWebSocket
+                                          : _connectWebSocket)
+                                      : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    _isSocketConnected
+                                        ? Colors.orange
+                                        : Colors.blue,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
               ),
-              if (_errorMessage != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8.0),
-                  child: Card(
-                    color: Colors.red[100],
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Text(
-                        _errorMessage!,
-                        style: const TextStyle(color: Colors.red),
+              const SizedBox(height: 16),
+
+              // P2P Controls Card
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'P2P Streaming',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        icon: Icon(
+                          _isP2PStreaming // Condition based on intent to stream
+                              ? Icons.stop_circle_outlined
+                              : Icons.play_circle_outline,
+                        ),
+                        label: Text(
+                          _isP2PStreaming // Label based on intent to stream
+                              ? 'Stop P2P Stream'
+                              : 'Start P2P Stream',
+                        ),
+                        onPressed:
+                            _isSocketConnected && _serialNumber.isNotEmpty
+                                ? (_isP2PStreaming
+                                    ? _stopP2PLocationStream // If streaming, stop it
+                                    : _startP2PLocationStream) // Else (not streaming), start it
+                                : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              _isP2PStreaming // Style based on intent to stream
+                                  ? Colors.redAccent
+                                  : Colors.teal,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(double.infinity, 40),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Location Info Card
+              if (_location != null)
+                Card(
+                  elevation: 2,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Current Location',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildDataRow(
+                          'Latitude',
+                          _location!.latitude.toStringAsFixed(6),
+                        ),
+                        _buildDataRow(
+                          'Longitude',
+                          _location!.longitude.toStringAsFixed(6),
+                        ),
+                        _buildDataRow(
+                          'Altitude',
+                          '${_location!.altitude.toStringAsFixed(1)} m',
+                        ),
+                        _buildDataRow(
+                          'Speed',
+                          '${(_location!.speed * 3.6).toStringAsFixed(1)} km/h',
+                        ),
+                        _buildDataRow(
+                          'Accuracy',
+                          '${_location!.accuracy.toStringAsFixed(1)} m',
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            'Last Update: $_formattedLastUpdateTime',
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: _loading || _updating ? null : _updateLocation,
-                      child:
+
+              // Periodic Backend Updates Card
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Periodic Backend Updates',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        icon: Icon(
                           _updating
-                              ? const SizedBox(
-                                height: 20,
-                                width: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                              : const Text('Update Location'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed:
-                          _periodicTimer == null ? startPeriodicUpdates : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
+                              ? Icons.stop_circle_outlined
+                              : Icons.play_circle_outline,
+                        ),
+                        label: Text(
+                          _updating
+                              ? 'Stop Periodic Updates'
+                              : 'Start Periodic Updates',
+                        ),
+                        onPressed:
+                            _isSocketConnected && _serialNumber.isNotEmpty
+                                ? (_updating
+                                    ? stopPeriodicUpdates
+                                    : startPeriodicUpdates)
+                                : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              _updating ? Colors.red : Colors.indigo,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(double.infinity, 40),
+                        ),
                       ),
-                      child: const Text('Start Auto Update'),
-                    ),
+                    ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              ElevatedButton(
-                onPressed: _periodicTimer != null ? stopPeriodicUpdates : null,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text('Stop Updates'),
-              ),
-
-              // Simulation Controls Section
-              const SizedBox(height: 24),
-              const Divider(),
-              const SizedBox(height: 16),
-              const Text(
-                '🎯 Movement Simulation',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.deepPurple,
                 ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Test real-time tracking with simulated movement patterns',
-                style: TextStyle(fontSize: 14, color: Colors.grey),
               ),
               const SizedBox(height: 16),
 
-              // Simulation Buttons Row 1
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          _isSocketConnected ? _simulateRandomMovement : null,
-                      icon: const Icon(Icons.shuffle),
-                      label: const Text('Random'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange,
-                        foregroundColor: Colors.white,
+              // WebSocket Simulation Card
+              Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'WebSocket Location Simulation',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          _isSocketConnected ? _simulateCircularMovement : null,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Circular'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purple,
-                        foregroundColor: Colors.white,
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Manual Simulation (sends single update via WebSocket):',
+                        style: TextStyle(fontSize: 14, color: Colors.grey),
                       ),
-                    ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed:
+                                  _isSocketConnected && _serialNumber.isNotEmpty
+                                      ? () => _simulateRandomMovement(
+                                        forceWebSocket: true,
+                                      )
+                                      : null,
+                              child: const Text('Random'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed:
+                                  _isSocketConnected && _serialNumber.isNotEmpty
+                                      ? () => _simulateCircularMovement(
+                                        forceWebSocket: true,
+                                      )
+                                      : null,
+                              child: const Text('Circular'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ElevatedButton(
+                        onPressed:
+                            _isSocketConnected && _serialNumber.isNotEmpty
+                                ? () => _simulateLinearMovement(
+                                  forceWebSocket: true,
+                                )
+                                : null,
+                        child: const Text('Linear Movement'),
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(double.infinity, 36),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-
-              // Simulation Buttons Row 2
-              ElevatedButton.icon(
-                onPressed: _isSocketConnected ? _simulateLinearMovement : null,
-                icon: const Icon(Icons.trending_up),
-                label: const Text('Linear Movement'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.teal,
-                  foregroundColor: Colors.white,
                 ),
               ),
 
-              const SizedBox(height: 8),
-              Text(
-                _isSocketConnected
-                    ? '✅ Ready for simulation'
-                    : '⚠️ Connect to server first',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: _isSocketConnected ? Colors.green : Colors.orange,
-                  fontStyle: FontStyle.italic,
+              // Error Message Display
+              if (_errorMessage != null && _errorMessage!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 16.0),
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
                 ),
-                textAlign: TextAlign.center,
-              ),
             ],
           ),
         ),
       ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          // Made async
+          await _requestPermission(); // Refresh permissions
+          if (mounted &&
+              (_permissionStatus == LocationPermission.always ||
+                  _permissionStatus == LocationPermission.whileInUse)) {
+            await _initializeLocation(); // Then get initial location
+          }
+        },
+        tooltip: 'Refresh Location/Permissions',
+        child: const Icon(Icons.my_location),
+      ),
     );
   }
 }
+
+// Ensure you have these helper functions or integrate them.
+// For example, if Constants.uri is not defined, define it.
+// class Constants {
+//   static String uri = "http://your_server_address:your_port";
+// }

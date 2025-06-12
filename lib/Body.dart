@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:webmark/body/simulator/live_socket.dart' show LocationTracker;
+
 import 'package:webmark/body/simulator/positio_location.dart' show GPSDevice;
 import '../body/HomePage.dart';
 import '../body/comments.dart';
@@ -50,16 +50,16 @@ class _MainScreenState extends State<MainScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.of(context).pop(); // Close dialog
-                  _navigateToHiddenScreen(
-                    const LocationTracker(),
-                    isUpdate: true,
-                  );
-                },
-                child: const Text('Location Update'),
-              ),
+              // ElevatedButton(
+              // onPressed: () {
+              //   // Navigator.of(context).pop(); // Close dialog
+              //   // _navigateToHiddenScreen(
+              //   //   // const LocationTracker(),
+              //   //   // isUpdate: true,
+              //   // );
+              // },
+              //   child: const Text('Location Update'),
+              // ),
               ElevatedButton(
                 onPressed: () {
                   Navigator.of(context).pop(); // Close dialog
@@ -95,15 +95,6 @@ class _MainScreenState extends State<MainScreen> {
         actions: [
           // Update button with a distinct icon
           IconButton(
-            icon: const Icon(Icons.system_update_alt),
-            onPressed: _navigateToUpdate,
-          ),
-          // Optional: Keep individual screen navigation if needed
-          IconButton(
-            icon: const Icon(Icons.location_on),
-            onPressed: () => _navigateToHiddenScreen(const LocationTracker()),
-          ),
-          IconButton(
             icon: const Icon(Icons.gps_fixed),
             onPressed: () => _navigateToHiddenScreen(const GPSDevice()),
           ),
@@ -119,24 +110,36 @@ class _MainScreenState extends State<MainScreen> {
         children: _pages,
       ),
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-          BottomNavigationBarItem(icon: Icon(Icons.work), label: 'Labour'),
           BottomNavigationBarItem(
-            icon: Icon(Icons.monetization_on),
-            label: 'Resources',
+            icon: Icon(Icons.dashboard_outlined),
+            activeIcon: Icon(Icons.dashboard),
+            label: 'Dashboard',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.chat_rounded),
-            label: 'Comments',
+            icon: Icon(Icons.gps_fixed_outlined),
+            activeIcon: Icon(Icons.gps_fixed),
+            label: 'Track',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
+            icon: Icon(Icons.map_outlined),
+            activeIcon: Icon(Icons.map),
+            label: 'Map',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.route_outlined),
+            activeIcon: Icon(Icons.route),
+            label: 'Routes',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
             label: 'Settings',
           ),
         ],
         currentIndex: _selectedIndex,
-        selectedItemColor: Colors.amber[800],
+        selectedItemColor: Theme.of(context).colorScheme.primary,
         unselectedItemColor: Colors.grey,
         onTap: _onItemTapped,
       ),
@@ -146,17 +149,17 @@ class _MainScreenState extends State<MainScreen> {
   String _getPageTitle(int index) {
     switch (index) {
       case 0:
-        return 'Home';
+        return 'Dashboard';
       case 1:
-        return 'Labour Management';
+        return 'Track Device';
       case 2:
-        return 'Resource Management ddddd';
+        return 'Live Map';
       case 3:
-        return 'Comments';
+        return 'Route History';
       case 4:
         return 'Settings';
       default:
-        return 'App';
+        return 'GPS Tracking';
     }
   }
 }

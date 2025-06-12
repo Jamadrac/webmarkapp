@@ -18,12 +18,12 @@ class DashboardScreen extends StatelessWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Dashboard'),
-        actions: [
-          IconButton(icon: Icon(Icons.logout), onPressed: () => auth.logout()),
-        ],
-      ),
+      // appBar: AppBar(
+      //   title: Text('DashboaSSSrd'),
+      //   actions: [
+      //     IconButton(icon: Icon(Icons.logout), onPressed: () => auth.logout()),
+      //   ],
+      // ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

@@ -6,6 +6,7 @@ import 'package:webmark/constants.dart';
 import 'package:webmark/AUTH/providers/auth_provider.dart';
 import 'package:webmark/AUTH/models/gps_asset_model.dart';
 import 'package:webmark/body/asset_detail_screen.dart';
+import 'package:webmark/body/add_asset_screen.dart';
 
 class MangementScreen extends StatefulWidget {
   const MangementScreen({super.key});
@@ -34,7 +35,7 @@ class _MangementScreenState extends State<MangementScreen> {
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final userId = auth.user?.id;
-      
+
       if (userId == null) {
         setState(() {
           errorMessage = 'User not authenticated';
@@ -49,19 +50,19 @@ class _MangementScreenState extends State<MangementScreen> {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-      );      if (response.statusCode == 200) {
+      );
+      if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print('Raw API response: $data'); // Debug log
-        
+
         if (data['gpsModules'] != null) {
           try {
             setState(() {
-              assets = (data['gpsModules'] as List)
-                  .map((asset) {
+              assets =
+                  (data['gpsModules'] as List).map((asset) {
                     print('Processing asset: $asset'); // Debug log
                     return GpsAsset.fromJson(asset);
-                  })
-                  .toList();
+                  }).toList();
               isLoading = false;
             });
           } catch (e) {
@@ -128,7 +129,7 @@ class _MangementScreenState extends State<MangementScreen> {
           setState(() {
             assets.removeWhere((asset) => asset.id == assetId);
           });
-          
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -163,9 +164,7 @@ class _MangementScreenState extends State<MangementScreen> {
   void navigateToAssetDetail(GpsAsset asset) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => AssetDetailScreen(asset: asset),
-      ),
+      MaterialPageRoute(builder: (context) => AssetDetailScreen(asset: asset)),
     );
   }
 
@@ -178,10 +177,7 @@ class _MangementScreenState extends State<MangementScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: fetchAssets,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: fetchAssets),
         ],
       ),
       body: Container(
@@ -195,32 +191,56 @@ class _MangementScreenState extends State<MangementScreen> {
               children: [
                 const Text(
                   'My Assets',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 ),
-                ElevatedButton.icon(
-                  onPressed: isLoading ? null : fetchAssets,
-                  icon: isLoading 
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                Row(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        final result = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const AddAssetScreen(),
                           ),
-                        )
-                      : const Icon(Icons.refresh),
-                  label: Text(isLoading ? 'Loading...' : 'Refresh'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue[600],
-                    foregroundColor: Colors.white,
-                  ),
+                        );
+                        if (result == true) {
+                          fetchAssets(); // Refresh the list when a new asset is added
+                        }
+                      },
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Asset'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green[600],
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton.icon(
+                      onPressed: isLoading ? null : fetchAssets,
+                      icon:
+                          isLoading
+                              ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.white,
+                                  ),
+                                ),
+                              )
+                              : const Icon(Icons.refresh),
+                      label: Text(isLoading ? 'Loading...' : 'Refresh'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue[600],
+                        foregroundColor: Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-            
+
             const SizedBox(height: 20),
 
             // Error Message
@@ -242,72 +262,73 @@ class _MangementScreenState extends State<MangementScreen> {
 
             // Content Section
             Expanded(
-              child: isLoading && assets.isEmpty
-                  ? const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Loading assets...'),
-                        ],
-                      ),
-                    )
-                  : assets.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(20),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Column(
-                                  children: [
-                                    Icon(
-                                      Icons.device_hub,
-                                      size: 64,
-                                      color: Colors.grey[400],
-                                    ),
-                                    const SizedBox(height: 16),
-                                    const Text(
-                                      'No assets available',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w500,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    const Text(
-                                      'Assets linked to your account will appear here',
-                                      style: TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 14,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                      : GridView.builder(
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: _getCrossAxisCount(context),
-                            crossAxisSpacing: 16,
-                            mainAxisSpacing: 16,
-                            childAspectRatio: 0.8,
-                          ),
-                          itemCount: assets.length,
-                          itemBuilder: (context, index) {
-                            final asset = assets[index];
-                            return _buildAssetCard(asset);
-                          },
+              child:
+                  isLoading && assets.isEmpty
+                      ? const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 16),
+                            Text('Loading assets...'),
+                          ],
                         ),
+                      )
+                      : assets.isEmpty
+                      ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.grey[100],
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.device_hub,
+                                    size: 64,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  const Text(
+                                    'No assets available',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Assets linked to your account will appear here',
+                                    style: TextStyle(
+                                      color: Colors.grey,
+                                      fontSize: 14,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                      : GridView.builder(
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: _getCrossAxisCount(context),
+                          crossAxisSpacing: 16,
+                          mainAxisSpacing: 16,
+                          childAspectRatio: 0.8,
+                        ),
+                        itemCount: assets.length,
+                        itemBuilder: (context, index) {
+                          final asset = assets[index];
+                          return _buildAssetCard(asset);
+                        },
+                      ),
             ),
           ],
         ),
@@ -326,9 +347,7 @@ class _MangementScreenState extends State<MangementScreen> {
   Widget _buildAssetCard(GpsAsset asset) {
     return Card(
       elevation: 4,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
         onTap: () => navigateToAssetDetail(asset),
         borderRadius: BorderRadius.circular(12),
@@ -347,35 +366,36 @@ class _MangementScreenState extends State<MangementScreen> {
                     border: Border.all(color: Colors.blue[200]!, width: 2),
                   ),
                   child: ClipOval(
-                    child: asset.imageUrl.isNotEmpty
-                        ? Image.network(
-                            asset.imageUrl,
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                color: Colors.grey[200],
-                                child: Icon(
-                                  Icons.device_hub,
-                                  size: 40,
-                                  color: Colors.grey[400],
-                                ),
-                              );
-                            },
-                          )
-                        : Container(
-                            color: Colors.grey[200],
-                            child: Icon(
-                              Icons.device_hub,
-                              size: 40,
-                              color: Colors.grey[400],
+                    child:
+                        asset.imageUrl.isNotEmpty
+                            ? Image.network(
+                              asset.imageUrl,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: Colors.grey[200],
+                                  child: Icon(
+                                    Icons.device_hub,
+                                    size: 40,
+                                    color: Colors.grey[400],
+                                  ),
+                                );
+                              },
+                            )
+                            : Container(
+                              color: Colors.grey[200],
+                              child: Icon(
+                                Icons.device_hub,
+                                size: 40,
+                                color: Colors.grey[400],
+                              ),
                             ),
-                          ),
                   ),
                 ),
               ),
-              
+
               const SizedBox(height: 12),
-              
+
               // Asset Name
               Expanded(
                 flex: 1,
@@ -390,9 +410,9 @@ class _MangementScreenState extends State<MangementScreen> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              
+
               const SizedBox(height: 8),
-              
+
               // Asset Details
               Expanded(
                 flex: 2,
@@ -400,15 +420,23 @@ class _MangementScreenState extends State<MangementScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildDetailRow('Serial:', asset.serialNumber),
-                    _buildDetailRow('Model:', asset.model.isNotEmpty ? asset.model : 'Unknown'),
-                    _buildDetailRow('Device:', asset.deviceName.isNotEmpty ? asset.deviceName : 'Unknown'),
+                    _buildDetailRow(
+                      'Model:',
+                      asset.model.isNotEmpty ? asset.model : 'Unknown',
+                    ),
+                    _buildDetailRow(
+                      'Device:',
+                      asset.deviceName.isNotEmpty
+                          ? asset.deviceName
+                          : 'Unknown',
+                    ),
                     _buildDetailRow('Last Seen:', _formatDate(asset.updatedAt)),
                   ],
                 ),
               ),
-              
+
               const SizedBox(height: 8),
-              
+
               // Action Buttons
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -454,10 +482,7 @@ class _MangementScreenState extends State<MangementScreen> {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Colors.black87,
-              ),
+              style: const TextStyle(fontSize: 11, color: Colors.black87),
               overflow: TextOverflow.ellipsis,
             ),
           ),
@@ -465,6 +490,7 @@ class _MangementScreenState extends State<MangementScreen> {
       ),
     );
   }
+
   String _formatDate(DateTime dateTime) {
     return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
   }

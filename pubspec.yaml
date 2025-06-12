@@ -43,6 +43,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   socket_io_client:
   logging:
+  flutter_webrtc: ^0.14.1 # Updated version
+  battery_plus: ^6.0.1 # Check pub.dev for the latest version
  
   font_awesome_flutter: ^10.6.0
   url_launcher: ^6.3.1

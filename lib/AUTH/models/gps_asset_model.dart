@@ -9,6 +9,7 @@ class GpsAsset {
   final DateTime createdAt;
   final DateTime updatedAt;
   final LastKnownLocation? lastKnownLocation;
+  final bool isActive;
 
   GpsAsset({
     required this.id,
@@ -21,8 +22,28 @@ class GpsAsset {
     required this.createdAt,
     required this.updatedAt,
     this.lastKnownLocation,
+    this.isActive = false,
   });
+
   factory GpsAsset.fromJson(Map<String, dynamic> json) {
+    print('Processing GPS Asset JSON: $json'); // Debug log
+
+    // Create location if available
+    LastKnownLocation? location;
+    if (json['lastKnownLocation'] != null) {
+      try {
+        location = LastKnownLocation.fromJson(json['lastKnownLocation']);
+        print('Parsed location: ${location.coordinates}'); // Debug log
+      } catch (e) {
+        print('Error parsing location: $e'); // Debug log
+      }
+    }
+
+    final DateTime updatedAt = DateTime.parse(
+      json['updatedAt'] ?? DateTime.now().toIso8601String(),
+    );
+    final bool isActive = DateTime.now().difference(updatedAt).inMinutes < 5;
+
     return GpsAsset(
       id: json['_id'] ?? '',
       serialNumber: json['serialNumber'] ?? '',
@@ -30,12 +51,13 @@ class GpsAsset {
       model: json['model'] ?? '',
       deviceName: json['deviceName'] ?? '',
       imageUrl: json['imageUrl'] ?? '',
-      userId: json['user'] ?? json['userId'] ?? '', // Handle both 'user' and 'userId' fields
-      createdAt: DateTime.parse(json['createdAt'] ?? DateTime.now().toIso8601String()),
-      updatedAt: DateTime.parse(json['updatedAt'] ?? DateTime.now().toIso8601String()),
-      lastKnownLocation: json['lastKnownLocation'] != null 
-          ? LastKnownLocation.fromJson(json['lastKnownLocation'])
-          : null,
+      userId: json['user'] ?? json['userId'] ?? '',
+      createdAt: DateTime.parse(
+        json['createdAt'] ?? DateTime.now().toIso8601String(),
+      ),
+      updatedAt: updatedAt,
+      lastKnownLocation: location,
+      isActive: isActive,
     );
   }
 
@@ -59,23 +81,32 @@ class LastKnownLocation {
   final String type;
   final List<double> coordinates;
 
-  LastKnownLocation({
-    required this.type,
-    required this.coordinates,
-  });
+  LastKnownLocation({required this.type, required this.coordinates});
+
   factory LastKnownLocation.fromJson(Map<String, dynamic> json) {
+    print('Parsing location JSON: $json'); // Debug log
+
+    List<double> coords;
+    if (json['coordinates'] is List) {
+      coords =
+          (json['coordinates'] as List)
+              .map((e) => double.parse(e.toString()))
+              .toList();
+    } else {
+      throw FormatException(
+        'Invalid coordinates format: ${json['coordinates']}',
+      );
+    }
+
+    print('Parsed coordinates: $coords'); // Debug log
+
     return LastKnownLocation(
       type: json['type'] ?? 'Point',
-      coordinates: (json['coordinates'] as List?)
-          ?.map((e) => (e as num).toDouble())
-          .toList() ?? [0.0, 0.0],
+      coordinates: coords,
     );
   }
 
   Map<String, dynamic> toJson() {
-    return {
-      'type': type,
-      'coordinates': coordinates,
-    };
+    return {'type': type, 'coordinates': coordinates};
   }
 }

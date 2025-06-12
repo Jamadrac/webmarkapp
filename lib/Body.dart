@@ -1,77 +1,38 @@
 import 'package:flutter/material.dart';
 
 import 'package:webmark/body/simulator/positio_location.dart' show GPSDevice;
-import '../body/HomePage.dart';
-import '../body/comments.dart';
-import '../body/management.dart';
-import '../body/profile.dart';
-import '../body/settings.dart';
+import 'package:webmark/body/HomePage.dart';
+import 'package:webmark/body/management.dart' as management;
+import 'package:webmark/body/settings.dart' show ProfileScreen;
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
   @override
-  _MainScreenState createState() => _MainScreenState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
-
   final PageController _pageController = PageController();
 
-  final List<Widget> _pages = [
-    DashboardScreen(),
-    const ProfileScreen(),
-    const MangementScreen(),
-    const commentsScreen(),
-    const SettingsScreen(),
-  ];
+  late final List<Widget> _pages;
 
-  // Method to navigate to hidden screens with optional update parameter
-  void _navigateToHiddenScreen(Widget screen, {bool isUpdate = false}) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => screen,
-        // Optional: Add settings for update-specific navigation
-        settings: RouteSettings(arguments: {'isUpdate': isUpdate}),
-      ),
-    );
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      const DashboardScreen(),
+      const ProfileScreen(),
+      const management.MangementScreen(),
+      const management.MangementScreen(), // Using MangementScreen for comments view too
+      const ProfileScreen(), // Using ProfileScreen from settings.dart for Settings too
+    ];
   }
 
-  // New method specifically for updates
-  void _navigateToUpdate() {
-    // You can customize this to navigate to a specific update screen
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Update Options'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ElevatedButton(
-              // onPressed: () {
-              //   // Navigator.of(context).pop(); // Close dialog
-              //   // _navigateToHiddenScreen(
-              //   //   // const LocationTracker(),
-              //   //   // isUpdate: true,
-              //   // );
-              // },
-              //   child: const Text('Location Update'),
-              // ),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.of(context).pop(); // Close dialog
-                  _navigateToHiddenScreen(const GPSDevice(), isUpdate: true);
-                },
-                child: const Text('GPS Update'),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+  // Method to navigate to hidden screens
+  void _navigateToHiddenScreen(Widget screen) {
+    Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
   }
 
   void _onItemTapped(int index) {
@@ -93,7 +54,6 @@ class _MainScreenState extends State<MainScreen> {
       appBar: AppBar(
         title: Text(_getPageTitle(_selectedIndex)),
         actions: [
-          // Update button with a distinct icon
           IconButton(
             icon: const Icon(Icons.gps_fixed),
             onPressed: () => _navigateToHiddenScreen(const GPSDevice()),
@@ -113,24 +73,24 @@ class _MainScreenState extends State<MainScreen> {
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard_outlined),
-            activeIcon: Icon(Icons.dashboard),
-            label: 'Dashboard',
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
+            label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.gps_fixed_outlined),
-            activeIcon: Icon(Icons.gps_fixed),
-            label: 'Track',
+            icon: Icon(Icons.person_outline),
+            activeIcon: Icon(Icons.person),
+            label: 'Profile',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.map_outlined),
-            activeIcon: Icon(Icons.map),
-            label: 'Map',
+            icon: Icon(Icons.devices_outlined),
+            activeIcon: Icon(Icons.devices),
+            label: 'List Devices',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.route_outlined),
-            activeIcon: Icon(Icons.route),
-            label: 'Routes',
+            icon: Icon(Icons.notifications_outlined),
+            activeIcon: Icon(Icons.notifications),
+            label: 'Notifications',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.settings_outlined),
@@ -149,13 +109,13 @@ class _MainScreenState extends State<MainScreen> {
   String _getPageTitle(int index) {
     switch (index) {
       case 0:
-        return 'Dashboard';
+        return 'Home';
       case 1:
-        return 'Track Device';
+        return 'Profile';
       case 2:
-        return 'Live Map';
+        return 'List Devices';
       case 3:
-        return 'Route History';
+        return 'Notifications';
       case 4:
         return 'Settings';
       default:

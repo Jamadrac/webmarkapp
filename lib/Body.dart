@@ -22,10 +22,10 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _pages = [
-      const DashboardScreen(),      const management.MangementScreen(),
+      const DashboardScreen(), const management.MangementScreen(),
       const management.MangementScreen(),
       const management.MangementScreen(), // Using MangementScreen for notifications view too
-      const SettingsScreen()
+      const SettingsScreen(),
     ];
   }
 
@@ -69,7 +69,8 @@ class _MainScreenState extends State<MainScreen> {
         children: _pages,
       ),
       bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed,        items: const [
+        type: BottomNavigationBarType.fixed,
+        items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),
             activeIcon: Icon(Icons.home),
@@ -115,9 +116,9 @@ class _MainScreenState extends State<MainScreen> {
       case 3:
         return 'Notifications';
       case 4:
-        return 'Settings';
-      default:
         return 'GPS Tracking';
+      default:
+        return 'Settings';
     }
   }
 }

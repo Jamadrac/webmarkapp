@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:webmark/AUTH/models/gps_asset_model.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:webmark/services/gps_asset_service.dart';
+import 'package:provider/provider.dart';
+import 'package:webmark/AUTH/providers/auth_provider.dart';
 
 class AssetDetailScreen extends StatefulWidget {
   final GpsAsset asset;
 
-  const AssetDetailScreen({super.key, required this.asset});
+  const AssetDetailScreen({
+    super.key,
+    required this.asset,
+  });
 
   @override
   State<AssetDetailScreen> createState() => _AssetDetailScreenState();
@@ -14,6 +20,178 @@ class AssetDetailScreen extends StatefulWidget {
 
 class _AssetDetailScreenState extends State<AssetDetailScreen> {
   final MapController _mapController = MapController();
+  late final GpsAssetService _assetService;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final userId = auth.user?.id;
+
+    if (userId == null) {
+      // Handle the case where user is not authenticated
+      Future.microtask(() {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('User not authenticated'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.of(context).pop();
+      });
+
+      return;
+    }
+
+    _assetService = GpsAssetService(userId: userId);
+    _startStatusUpdates();
+  }
+
+  // Periodic status updates
+  void _startStatusUpdates() {
+    Future.delayed(const Duration(seconds: 30), () {
+      if (mounted) {
+        _updateAssetStatus();
+        _startStatusUpdates();
+      }
+    });
+  }
+
+  // Update asset status
+  Future<void> _updateAssetStatus() async {
+    try {
+      final status = await _assetService.getAssetStatus(widget.asset.id);
+      if (mounted) {
+        setState(() {
+          widget.asset.engineOn = status['engineOn'] ?? widget.asset.engineOn;
+          widget.asset.isActive = status['isActive'] ?? widget.asset.isActive;
+          widget.asset.speed =
+              status['speed']?.toDouble() ?? widget.asset.speed;
+          widget.asset.altitude =
+              status['altitude']?.toDouble() ?? widget.asset.altitude;
+          widget.asset.temperature =
+              status['temperature']?.toDouble() ?? widget.asset.temperature;
+          widget.asset.humidity =
+              status['humidity']?.toDouble() ?? widget.asset.humidity;
+          widget.asset.lastUpdated = DateTime.parse(
+            status['lastUpdated'] ?? DateTime.now().toIso8601String(),
+          );
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to update status: $e')));
+      }
+    }
+  }
+
+  // Control engine state
+  Future<void> _controlEngine(bool state) async {
+    setState(() => _isLoading = true);
+    try {
+      await _assetService.controlEngine(widget.asset.id, state);
+      if (mounted) {
+        setState(() {
+          widget.asset.engineOn = state;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to control engine: $e')));
+      }
+    }
+  }
+
+  // Control power state
+  Future<void> _controlPower(bool state) async {
+    setState(() => _isLoading = true);
+    try {
+      await _assetService.controlPower(widget.asset.id, state);
+      if (mounted) {
+        setState(() {
+          widget.asset.isActive = state;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to control power: $e')));
+      }
+    }
+  }
+
+  // Trigger alarm
+  Future<void> _triggerAlarm() async {
+    setState(() => _isLoading = true);
+    try {
+      await _assetService.triggerAlarm(widget.asset.id);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Alarm triggered successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to trigger alarm: $e')));
+      }
+    }
+  }
+
+  // Activate lost mode
+  Future<void> _activateLostMode() async {
+    setState(() => _isLoading = true);
+    try {
+      await _assetService.activateLostMode(widget.asset.id);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Lost mode activated')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to activate lost mode: $e')),
+        );
+      }
+    }
+  }
+
+  // Restore defaults
+  Future<void> _restoreDefaults() async {
+    setState(() => _isLoading = true);
+    try {
+      await _assetService.restoreDefaults(widget.asset.id);
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device restored to defaults')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to restore defaults: $e')),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -276,28 +454,185 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
                 ),
               ),
 
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
 
-            // Action Buttons
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _refreshAssetData(context),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Refresh'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: colorScheme.secondary,
-                      foregroundColor: colorScheme.onSecondary,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
+            // Control Features Card
+            Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Control Features',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                    // Engine Control
+                    SwitchListTile(
+                      title: const Text('Engine Control'),
+                      subtitle: Text(
+                        widget.asset.engineOn
+                            ? 'Engine is ON'
+                            : 'Engine is OFF',
+                        style: TextStyle(
+                          color:
+                              widget.asset.engineOn ? Colors.green : Colors.red,
+                        ),
+                      ),
+                      value: widget.asset.engineOn,
+                      onChanged:
+                          _isLoading
+                              ? null
+                              : (bool value) => _controlEngine(value),
+                    ),
+                    // Power Control
+                    SwitchListTile(
+                      title: const Text('Power Control'),
+                      subtitle: Text(
+                        widget.asset.isActive ? 'Power is ON' : 'Power is OFF',
+                      ),
+                      value: widget.asset.isActive,
+                      onChanged:
+                          _isLoading
+                              ? null
+                              : (bool value) => _controlPower(value),
+                    ),
+                    // Beep Alarm
+                    ListTile(
+                      title: const Text('Beep Alarm'),
+                      trailing: ElevatedButton.icon(
+                        onPressed: _isLoading ? null : _triggerAlarm,
+                        icon: const Icon(Icons.volume_up),
+                        label: const Text('Sound Alarm'),
+                      ),
+                    ),
+                    // Lost Mode
+                    ListTile(
+                      title: const Text('Lost Mode'),
+                      trailing: ElevatedButton.icon(
+                        onPressed: _isLoading ? null : _activateLostMode,
+                        icon: const Icon(Icons.gps_fixed),
+                        label: const Text('Activate'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ),
+                    // Restore Button
+                    ListTile(
+                      title: const Text('Restore Defaults'),
+                      trailing: ElevatedButton.icon(
+                        onPressed:
+                            _isLoading
+                                ? null
+                                : () {
+                                  showDialog(
+                                    context: context,
+                                    builder:
+                                        (context) => AlertDialog(
+                                          title: const Text('Restore Defaults'),
+                                          content: const Text(
+                                            'Are you sure you want to reset this device to factory defaults?',
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed:
+                                                  () => Navigator.pop(context),
+                                              child: const Text('Cancel'),
+                                            ),
+                                            TextButton(
+                                              onPressed: () {
+                                                Navigator.pop(context);
+                                                _restoreDefaults();
+                                              },
+                                              child: const Text('Restore'),
+                                            ),
+                                          ],
+                                        ),
+                                  );
+                                },
+                        icon: const Icon(Icons.restore),
+                        label: const Text('Reset'),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
+
+            const SizedBox(height: 16),
+
+            // Status Display Card
+            Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Status Display',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _buildStatusRow(
+                      'Battery',
+                      '78%',
+                      icon: Icons.battery_charging_full,
+                      iconColor: Colors.green,
+                    ),
+                    if (hasLocation) ...[
+                      _buildStatusRow(
+                        'Last Seen Location',
+                        '${widget.asset.lastKnownLocation!.coordinates[1]}, ${widget.asset.lastKnownLocation!.coordinates[0]}',
+                        icon: Icons.location_on,
+                      ),
+                    ],
+                    _buildStatusRow(
+                      'Current Speed',
+                      '${widget.asset.speed ?? 0} km/h',
+                      icon: Icons.speed,
+                    ),
+                    _buildStatusRow(
+                      'Altitude',
+                      '${widget.asset.altitude ?? 0} m',
+                      icon: Icons.height,
+                    ),
+                    _buildStatusRow(
+                      'Temperature',
+                      '${widget.asset.temperature ?? 0}°C',
+                      icon: Icons.thermostat,
+                    ),
+                    _buildStatusRow(
+                      'Humidity',
+                      '${widget.asset.humidity ?? 0}%',
+                      icon: Icons.water_drop,
+                    ),
+                    _buildStatusRow(
+                      'Last Update',
+                      widget.asset.lastUpdated?.toLocal().toString() ??
+                          'Unknown',
+                      icon: Icons.update,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
           ],
         ),
       ),
@@ -369,6 +704,38 @@ class _AssetDetailScreenState extends State<AssetDetailScreen> {
       SnackBar(
         content: const Text('Refreshing device data...'),
         backgroundColor: Theme.of(context).colorScheme.secondary,
+      ),
+    );
+  }
+
+  Widget _buildStatusRow(
+    String label,
+    String value, {
+    IconData? icon,
+    Color? iconColor,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        children: [
+          if (icon != null) ...[
+            Icon(
+              icon,
+              color: iconColor ?? Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 8),
+          ],
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(color: Theme.of(context).colorScheme.secondary),
+          ),
+        ],
       ),
     );
   }

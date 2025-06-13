@@ -9,7 +9,13 @@ class GpsAsset {
   final DateTime createdAt;
   final DateTime updatedAt;
   final LastKnownLocation? lastKnownLocation;
-  final bool isActive;
+  bool isActive; // Changed to non-final to allow toggling
+  bool engineOn; // New property for engine control
+  double? speed; // New property for current speed
+  double? altitude; // New property for altitude
+  double? temperature; // New property for temperature
+  double? humidity; // New property for humidity
+  DateTime? lastUpdated; // New property for last update time
 
   GpsAsset({
     required this.id,
@@ -23,6 +29,12 @@ class GpsAsset {
     required this.updatedAt,
     this.lastKnownLocation,
     this.isActive = false,
+    this.engineOn = false,
+    this.speed,
+    this.altitude,
+    this.temperature,
+    this.humidity,
+    this.lastUpdated,
   });
 
   factory GpsAsset.fromJson(Map<String, dynamic> json) {
@@ -51,13 +63,22 @@ class GpsAsset {
       model: json['model'] ?? '',
       deviceName: json['deviceName'] ?? '',
       imageUrl: json['imageUrl'] ?? '',
-      userId: json['user'] ?? json['userId'] ?? '',
+      userId: json['userId'] ?? '',
       createdAt: DateTime.parse(
         json['createdAt'] ?? DateTime.now().toIso8601String(),
       ),
       updatedAt: updatedAt,
       lastKnownLocation: location,
       isActive: isActive,
+      engineOn: json['engineOn'] ?? false,
+      speed: json['speed']?.toDouble(),
+      altitude: json['altitude']?.toDouble(),
+      temperature: json['temperature']?.toDouble(),
+      humidity: json['humidity']?.toDouble(),
+      lastUpdated:
+          json['lastUpdated'] != null
+              ? DateTime.parse(json['lastUpdated'])
+              : updatedAt,
     );
   }
 
@@ -73,6 +94,13 @@ class GpsAsset {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'lastKnownLocation': lastKnownLocation?.toJson(),
+      'isActive': isActive,
+      'engineOn': engineOn,
+      'speed': speed,
+      'altitude': altitude,
+      'temperature': temperature,
+      'humidity': humidity,
+      'lastUpdated': lastUpdated?.toIso8601String(),
     };
   }
 }

@@ -58,11 +58,12 @@ class _MangementScreenState extends State<MangementScreen> {
         if (data['gpsModules'] != null) {
           try {
             setState(() {
-              assets =
-                  (data['gpsModules'] as List).map((asset) {
+              assets = (data['gpsModules'] as List)
+                  .map((asset) {
                     print('Processing asset: $asset'); // Debug log
                     return GpsAsset.fromJson(asset);
-                  }).toList();
+                  })
+                  .toList();
               isLoading = false;
             });
           } catch (e) {
@@ -160,11 +161,12 @@ class _MangementScreenState extends State<MangementScreen> {
       }
     }
   }
-
   void navigateToAssetDetail(GpsAsset asset) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => AssetDetailScreen(asset: asset)),
+      MaterialPageRoute(
+        builder: (context) => AssetDetailScreen(asset: asset),
+      ),
     );
   }
 
@@ -172,6 +174,71 @@ class _MangementScreenState extends State<MangementScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const AddAssetScreen()),
+    );
+  }
+
+  Widget _buildAssetListItem(GpsAsset asset) {
+    return Card(
+      elevation: 4,
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: CircleAvatar(
+          radius: 30,
+          backgroundColor: Colors.blue[100],
+          child: asset.imageUrl.isNotEmpty
+              ? ClipOval(
+                  child: Image.network(
+                    asset.imageUrl,
+                    width: 60,
+                    height: 60,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const Icon(Icons.device_hub, size: 30);
+                    },
+                  ),
+                )
+              : const Icon(Icons.device_hub, size: 30),
+        ),
+        title: Text(
+          asset.name.isNotEmpty ? asset.name : 'Unnamed Asset',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 4),
+            Text('Serial: ${asset.serialNumber}'),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: asset.isActive ? Colors.green : Colors.red,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  asset.isActive ? 'Active' : 'Inactive',
+                  style: TextStyle(
+                    color: asset.isActive ? Colors.green : Colors.red,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        trailing: IconButton(
+          icon: const Icon(Icons.delete_outline),
+          color: Colors.red,
+          onPressed: () => deleteAsset(asset.id),
+        ),
+        onTap: () => navigateToAssetDetail(asset),
+      ),
     );
   }
 
@@ -253,267 +320,18 @@ class _MangementScreenState extends State<MangementScreen> {
               )
             else
               SliverList(
-                delegate: SliverChildBuilderDelegate((context, index) {
-                  final asset = assets[index];
-                  final isActive = asset.isActive;
-                  return Card(
-                    margin: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    elevation: 2,
-                    child: InkWell(
-                      onTap: () => navigateToAssetDetail(asset),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color:
-                                        isActive
-                                            ? colorScheme.primary.withOpacity(
-                                              0.1,
-                                            )
-                                            : colorScheme.error.withOpacity(
-                                              0.1,
-                                            ),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Icon(
-                                    Icons.gps_fixed,
-                                    color:
-                                        isActive
-                                            ? colorScheme.primary
-                                            : colorScheme.error,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        asset.name,
-                                        style: theme.textTheme.titleMedium
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        asset.serialNumber,
-                                        style: theme.textTheme.bodySmall
-                                            ?.copyWith(
-                                              color:
-                                                  colorScheme.onSurfaceVariant,
-                                            ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color:
-                                        isActive
-                                            ? colorScheme.primary.withOpacity(
-                                              0.1,
-                                            )
-                                            : colorScheme.error.withOpacity(
-                                              0.1,
-                                            ),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Text(
-                                    isActive ? 'Active' : 'Offline',
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color:
-                                          isActive
-                                              ? colorScheme.primary
-                                              : colorScheme.error,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                }, childCount: assets.length),
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) => _buildAssetListItem(assets[index]),
+                  childCount: assets.length,
+                ),
               ),
           ],
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        backgroundColor: colorScheme.primary,
-        foregroundColor: colorScheme.onPrimary,
-        onPressed: () => navigateToAddAsset(),
+        onPressed: navigateToAddAsset,
         child: const Icon(Icons.add),
       ),
     );
-  }
-
-  // Helper methods to keep code organized
-  Widget _buildAssetCard(GpsAsset asset) {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () => navigateToAssetDetail(asset),
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              // Asset Image
-              Expanded(
-                flex: 3,
-                child: Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.blue[200]!, width: 2),
-                  ),
-                  child: ClipOval(
-                    child:
-                        asset.imageUrl.isNotEmpty
-                            ? Image.network(
-                              asset.imageUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) {
-                                return Container(
-                                  color: Colors.grey[200],
-                                  child: Icon(
-                                    Icons.device_hub,
-                                    size: 40,
-                                    color: Colors.grey[400],
-                                  ),
-                                );
-                              },
-                            )
-                            : Container(
-                              color: Colors.grey[200],
-                              child: Icon(
-                                Icons.device_hub,
-                                size: 40,
-                                color: Colors.grey[400],
-                              ),
-                            ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // Asset Name
-              Expanded(
-                flex: 1,
-                child: Text(
-                  asset.name.isNotEmpty ? asset.name : 'Unnamed Asset',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // Asset Details
-              Expanded(
-                flex: 2,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildDetailRow('Serial:', asset.serialNumber),
-                    _buildDetailRow(
-                      'Model:',
-                      asset.model.isNotEmpty ? asset.model : 'Unknown',
-                    ),
-                    _buildDetailRow(
-                      'Device:',
-                      asset.deviceName.isNotEmpty
-                          ? asset.deviceName
-                          : 'Unknown',
-                    ),
-                    _buildDetailRow('Last Seen:', _formatDate(asset.updatedAt)),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // Action Buttons
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  IconButton(
-                    onPressed: () => navigateToAssetDetail(asset),
-                    icon: const Icon(Icons.visibility),
-                    color: Colors.blue[600],
-                    tooltip: 'View Details',
-                  ),
-                  IconButton(
-                    onPressed: () => deleteAsset(asset.id),
-                    icon: const Icon(Icons.delete),
-                    color: Colors.red[600],
-                    tooltip: 'Delete Asset',
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDetailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 50,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: Colors.grey[600],
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(fontSize: 11, color: Colors.black87),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatDate(DateTime dateTime) {
-    return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
   }
 }

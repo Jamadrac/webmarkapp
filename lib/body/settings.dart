@@ -6,19 +6,18 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(home: ProfileScreen());
+  Widget build(BuildContext context) {    return const MaterialApp(home: SettingsScreen());
   }
 }
 
-class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
 
   @override
-  State<ProfileScreen> createState() => _ProfileScreenState();
+  State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen> {
+class _SettingsScreenState extends State<SettingsScreen> {
   final _formKey = GlobalKey<FormState>();
   final Map<String, TextEditingController> controllers = {
     'firstName': TextEditingController(),
@@ -88,7 +87,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Profile'),
+        title: const Text('Settings'),
         actions: [
           IconButton(
             icon: Icon(_isEditing ? Icons.save : Icons.edit),

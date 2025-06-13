@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:webmark/body/simulator/positio_location.dart' show GPSDevice;
 import 'package:webmark/body/HomePage.dart';
 import 'package:webmark/body/management.dart' as management;
-import 'package:webmark/body/settings.dart' show ProfileScreen;
+import 'package:webmark/body/settings.dart' show SettingsScreen;
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -22,11 +22,10 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _pages = [
-      const DashboardScreen(),
-      const ProfileScreen(),
+      const DashboardScreen(),      const management.MangementScreen(),
       const management.MangementScreen(),
-      const management.MangementScreen(), // Using MangementScreen for comments view too
-      const ProfileScreen(), // Using ProfileScreen from settings.dart for Settings too
+      const management.MangementScreen(), // Using MangementScreen for notifications view too
+      const SettingsScreen()
     ];
   }
 
@@ -70,22 +69,21 @@ class _MainScreenState extends State<MainScreen> {
         children: _pages,
       ),
       bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed,
-        items: const [
+        type: BottomNavigationBarType.fixed,        items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),
             activeIcon: Icon(Icons.home),
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            activeIcon: Icon(Icons.person),
-            label: 'Profile',
-          ),
-          BottomNavigationBarItem(
             icon: Icon(Icons.devices_outlined),
             activeIcon: Icon(Icons.devices),
-            label: 'List Devices',
+            label: 'Devices',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.manage_search_outlined),
+            activeIcon: Icon(Icons.manage_search),
+            label: 'Management',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.notifications_outlined),

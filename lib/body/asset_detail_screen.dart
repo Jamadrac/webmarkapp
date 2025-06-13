@@ -9,10 +9,7 @@ import 'package:webmark/AUTH/providers/auth_provider.dart';
 class AssetDetailScreen extends StatefulWidget {
   final GpsAsset asset;
 
-  const AssetDetailScreen({
-    super.key,
-    required this.asset,
-  });
+  const AssetDetailScreen({super.key, required this.asset});
 
   @override
   State<AssetDetailScreen> createState() => _AssetDetailScreenState();

@@ -1,18 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:webmark/AUTH/models/gps_asset_model.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
-class AssetDetailScreen extends StatelessWidget {
+class AssetDetailScreen extends StatefulWidget {
   final GpsAsset asset;
 
   const AssetDetailScreen({super.key, required this.asset});
 
   @override
+  State<AssetDetailScreen> createState() => _AssetDetailScreenState();
+}
+
+class _AssetDetailScreenState extends State<AssetDetailScreen> {
+  final MapController _mapController = MapController();
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final hasLocation = widget.asset.lastKnownLocation != null;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(asset.name.isNotEmpty ? asset.name : 'Asset Details'),
-        backgroundColor: Colors.blue[600],
-        foregroundColor: Colors.white,
+        title: Text(
+          widget.asset.name.isNotEmpty ? widget.asset.name : 'Asset Details',
+        ),
+        backgroundColor: colorScheme.primary,
+        foregroundColor: colorScheme.onPrimary,
         elevation: 0,
       ),
       body: SingleChildScrollView(
@@ -36,39 +51,50 @@ class AssetDetailScreen extends StatelessWidget {
                       height: 120,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(color: Colors.blue[200]!, width: 3),
+                        border: Border.all(
+                          color: colorScheme.primary.withOpacity(0.5),
+                          width: 3,
+                        ),
                       ),
                       child: ClipOval(
-                        child: asset.imageUrl.isNotEmpty
-                            ? Image.network(
-                                asset.imageUrl,
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return _buildPlaceholderImage();
-                                },
-                              )
-                            : _buildPlaceholderImage(),
+                        child:
+                            widget.asset.imageUrl.isNotEmpty
+                                ? Image.network(
+                                  widget.asset.imageUrl,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return _buildPlaceholderImage();
+                                  },
+                                )
+                                : _buildPlaceholderImage(),
                       ),
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // Asset Name
                     Text(
-                      asset.name.isNotEmpty ? asset.name : 'Unnamed Asset',
-                      style: const TextStyle(
-                        fontSize: 24,
+                      widget.asset.name.isNotEmpty
+                          ? widget.asset.name
+                          : 'Unnamed Asset',
+                      style: theme.textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
                       textAlign: TextAlign.center,
                     ),
-                    
+
                     const SizedBox(height: 8),
-                    
+
                     // Status Indicator
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
                       decoration: BoxDecoration(
-                        color: Colors.green[100],
+                        color:
+                            widget.asset.isActive
+                                ? colorScheme.primary.withOpacity(0.1)
+                                : colorScheme.error.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Row(
@@ -77,16 +103,22 @@ class AssetDetailScreen extends StatelessWidget {
                           Container(
                             width: 8,
                             height: 8,
-                            decoration: const BoxDecoration(
-                              color: Colors.green,
+                            decoration: BoxDecoration(
+                              color:
+                                  widget.asset.isActive
+                                      ? colorScheme.primary
+                                      : colorScheme.error,
                               shape: BoxShape.circle,
                             ),
                           ),
                           const SizedBox(width: 6),
-                          const Text(
-                            'Active',
+                          Text(
+                            widget.asset.isActive ? 'Active' : 'Offline',
                             style: TextStyle(
-                              color: Colors.green,
+                              color:
+                                  widget.asset.isActive
+                                      ? colorScheme.primary
+                                      : colorScheme.error,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
@@ -97,77 +129,166 @@ class AssetDetailScreen extends StatelessWidget {
                 ),
               ),
             ),
-            
+
             const SizedBox(height: 20),
-            
+
             // Device Information Card
-            _buildInfoCard(
-              'Device Information',
-              [
-                _buildInfoRow('Serial Number', asset.serialNumber),
-                _buildInfoRow('Model', asset.model.isNotEmpty ? asset.model : 'Unknown'),
-                _buildInfoRow('Device Name', asset.deviceName.isNotEmpty ? asset.deviceName : 'Unknown'),
-                _buildInfoRow('Asset ID', asset.id),
-              ],
-            ),
-            
+            _buildInfoCard('Device Information', [
+              _buildInfoRow('Serial Number', widget.asset.serialNumber),
+              _buildInfoRow(
+                'Model',
+                widget.asset.model.isNotEmpty ? widget.asset.model : 'Unknown',
+              ),
+              _buildInfoRow(
+                'Device Name',
+                widget.asset.deviceName.isNotEmpty
+                    ? widget.asset.deviceName
+                    : 'Unknown',
+              ),
+              _buildInfoRow('Asset ID', widget.asset.id),
+            ]),
+
             const SizedBox(height: 16),
-            
-            // Location Information Card
-            _buildInfoCard(
-              'Location Information',
-              [
-                if (asset.lastKnownLocation != null) ...[
-                  _buildInfoRow('Latitude', asset.lastKnownLocation!.coordinates[0].toStringAsFixed(6)),
-                  _buildInfoRow('Longitude', asset.lastKnownLocation!.coordinates[1].toStringAsFixed(6)),
-                  _buildInfoRow('Location Type', asset.lastKnownLocation!.type),
-                ] else
-                  _buildInfoRow('Location', 'No location data available'),
-              ],
-            ),
-            
-            const SizedBox(height: 16),
-            
-            // Timestamps Card
-            _buildInfoCard(
-              'Timestamps',
-              [
-                _buildInfoRow('Created', _formatDateTime(asset.createdAt)),
-                _buildInfoRow('Last Updated', _formatDateTime(asset.updatedAt)),
-              ],
-            ),
-            
+
+            // Map Card
+            if (hasLocation) ...[
+              Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Text(
+                        'Location',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child: FlutterMap(
+                        mapController: _mapController,
+                        options: MapOptions(
+                          center: LatLng(
+                            widget.asset.lastKnownLocation!.coordinates[1],
+                            widget.asset.lastKnownLocation!.coordinates[0],
+                          ),
+                          zoom: 15.0,
+                          interactiveFlags: InteractiveFlag.all,
+                        ),
+                        children: [
+                          TileLayer(
+                            urlTemplate:
+                                'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            userAgentPackageName: 'com.example.webmark',
+                          ),
+                          MarkerLayer(
+                            markers: [
+                              Marker(
+                                point: LatLng(
+                                  widget
+                                      .asset
+                                      .lastKnownLocation!
+                                      .coordinates[1],
+                                  widget
+                                      .asset
+                                      .lastKnownLocation!
+                                      .coordinates[0],
+                                ),
+                                child: Icon(
+                                  Icons.location_on,
+                                  color:
+                                      widget.asset.isActive
+                                          ? colorScheme.primary
+                                          : colorScheme.error,
+                                  size: 40,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildInfoRow(
+                            'Latitude',
+                            widget.asset.lastKnownLocation!.coordinates[1]
+                                .toStringAsFixed(6),
+                          ),
+                          _buildInfoRow(
+                            'Longitude',
+                            widget.asset.lastKnownLocation!.coordinates[0]
+                                .toStringAsFixed(6),
+                          ),
+                          _buildInfoRow(
+                            'Location Type',
+                            widget.asset.lastKnownLocation!.type,
+                          ),
+                          _buildInfoRow(
+                            'Last Updated',
+                            _formatDateTime(widget.asset.updatedAt),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ] else
+              Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.location_off,
+                        size: 48,
+                        color: colorScheme.error,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No Location Data Available',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'This device has not reported its location yet.',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.textTheme.bodySmall?.color,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             const SizedBox(height: 24),
-            
+
             // Action Buttons
             Row(
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: asset.lastKnownLocation != null
-                        ? () => _showLocationOnMap(context)
-                        : null,
-                    icon: const Icon(Icons.map),
-                    label: const Text('View on Map'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue[600],
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () => _refreshAssetData(context),
                     icon: const Icon(Icons.refresh),
                     label: const Text('Refresh'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green[600],
-                      foregroundColor: Colors.white,
+                      backgroundColor: colorScheme.secondary,
+                      foregroundColor: colorScheme.onSecondary,
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8),
@@ -183,23 +304,11 @@ class AssetDetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildPlaceholderImage() {
-    return Container(
-      color: Colors.grey[200],
-      child: Icon(
-        Icons.device_hub,
-        size: 60,
-        color: Colors.grey[400],
-      ),
-    );
-  }
-
   Widget _buildInfoCard(String title, List<Widget> children) {
+    final theme = Theme.of(context);
     return Card(
       elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -207,10 +316,8 @@ class AssetDetailScreen extends StatelessWidget {
           children: [
             Text(
               title,
-              style: const TextStyle(
-                fontSize: 18,
+              style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
-                color: Colors.black87,
               ),
             ),
             const SizedBox(height: 12),
@@ -238,15 +345,17 @@ class AssetDetailScreen extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.black87,
-              ),
-            ),
+            child: Text(value, style: const TextStyle(color: Colors.black87)),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildPlaceholderImage() {
+    return Container(
+      color: Colors.grey[200],
+      child: Icon(Icons.device_hub, size: 60, color: Colors.grey[400]),
     );
   }
 
@@ -254,20 +363,12 @@ class AssetDetailScreen extends StatelessWidget {
     return '${dateTime.day}/${dateTime.month}/${dateTime.year} ${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
   }
 
-  void _showLocationOnMap(BuildContext context) {
-    // TODO: Navigate to map screen with asset location
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Map view coming soon!'),
-      ),
-    );
-  }
-
   void _refreshAssetData(BuildContext context) {
     // TODO: Implement refresh functionality
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Asset data refreshed!'),
+      SnackBar(
+        content: const Text('Refreshing device data...'),
+        backgroundColor: Theme.of(context).colorScheme.secondary,
       ),
     );
   }

@@ -9,13 +9,19 @@ class GpsAsset {
   final DateTime createdAt;
   final DateTime updatedAt;
   final LastKnownLocation? lastKnownLocation;
-  bool isActive; // Changed to non-final to allow toggling
-  bool engineOn; // New property for engine control
-  double? speed; // New property for current speed
-  double? altitude; // New property for altitude
-  double? temperature; // New property for temperature
-  double? humidity; // New property for humidity
-  DateTime? lastUpdated; // New property for last update time
+  bool isActive; // Power state
+  bool engineOn; // Engine state
+  bool alarmActive; // Alarm state
+  bool lostModeActive; // Lost mode state
+  bool isOnline; // Device online status
+  String? batteryLevel; // Battery level
+  double? speed; // Current speed
+  double? altitude; // Altitude
+  double? temperature; // Temperature
+  double? humidity; // Humidity
+  DateTime? lastUpdated; // Last status update time
+  String? signalStrength; // Signal strength (e.g., "good", "poor")
+  String? errorState; // Any error condition
 
   GpsAsset({
     required this.id,
@@ -30,11 +36,17 @@ class GpsAsset {
     this.lastKnownLocation,
     this.isActive = false,
     this.engineOn = false,
+    this.alarmActive = false,
+    this.lostModeActive = false,
+    this.isOnline = false,
+    this.batteryLevel,
     this.speed,
     this.altitude,
     this.temperature,
     this.humidity,
     this.lastUpdated,
+    this.signalStrength,
+    this.errorState,
   });
 
   factory GpsAsset.fromJson(Map<String, dynamic> json) {
